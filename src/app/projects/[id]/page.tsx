@@ -116,80 +116,6 @@ function ProjectDetailContent() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  useEffect(() => {
-    const active = jobs.some((j) => j.status === "queued" || j.status === "processing");
-    if (!active) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void load();
-    }, 5000);
-    return () => window.clearInterval(timer);
-  }, [jobs, load]);
-
-  useEffect(() => {
-    if (!id) {
-      return;
-    }
-    let cancelled = false;
-    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let eventName = "";
-    let dataBuffer = "";
-
-    const parseChunk = async (chunk: Uint8Array) => {
-      buffer += decoder.decode(chunk, { stream: true });
-      const parts = buffer.split("\n");
-      buffer = parts.pop() ?? "";
-      for (const rawLine of parts) {
-        const line = rawLine.replace(/\r$/, "");
-        if (line.startsWith("event:")) {
-          eventName = line.slice(6).trim();
-        } else if (line.startsWith("data:")) {
-          const piece = line.slice(5).trim();
-          dataBuffer = dataBuffer ? `${dataBuffer}\n${piece}` : piece;
-        } else if (line === "") {
-          if (eventName === "job:status_update" && dataBuffer) {
-            await load();
-          }
-          eventName = "";
-          dataBuffer = "";
-        }
-      }
-    };
-
-    const run = async () => {
-      try {
-        const res = await apiFetch("/api/jobs/status-stream", {
-          method: "GET",
-          headers: { Accept: "text/event-stream" },
-        });
-        if (!res.ok || !res.body) {
-          return;
-        }
-        reader = res.body.getReader();
-        while (!cancelled) {
-          const part = await reader.read();
-          if (part.done) {
-            break;
-          }
-          await parseChunk(part.value);
-        }
-      } catch {
-        // polling effect above still keeps statuses fresh
-      }
-    };
-
-    void run();
-    return () => {
-      cancelled = true;
-      if (reader) {
-        void reader.cancel();
-      }
-    };
-  }, [id, load]);
-
   async function openTranscriptViewer(jobId: string) {
     setTranscriptJobId(jobId);
     setTranscriptOpen(true);
@@ -231,6 +157,18 @@ function ProjectDetailContent() {
     return `${m}:${s}`;
   }
 
+  function segmentConfidence(start: number, end: number): number | null {
+    if (!transcriptData || transcriptData.words.length === 0) {
+      return null;
+    }
+    const inRange = transcriptData.words.filter((w) => w.start >= start && w.end <= end);
+    if (inRange.length === 0) {
+      return null;
+    }
+    const avg = inRange.reduce((sum, w) => sum + w.confidence, 0) / inRange.length;
+    return avg;
+  }
+
   async function runTranscriptionForJob(jobId: string) {
     setRunningJobId(jobId);
     setMessage(null);
@@ -253,6 +191,7 @@ function ProjectDetailContent() {
           kind: "err",
           text: body.error ?? body.errors?.[0] ?? `Transcription worker failed (${res.status})`,
         });
+        setRunningJobId(null);
         return;
       }
       setToast(`Transcription started for job ${body.jobId ?? jobId}.`);
@@ -263,7 +202,6 @@ function ProjectDetailContent() {
         kind: "err",
         text: e instanceof Error ? e.message : "Worker request failed",
       });
-    } finally {
       setRunningJobId(null);
     }
   }
@@ -274,17 +212,39 @@ function ProjectDetailContent() {
       try {
         const res = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/status`);
         if (!res.ok) {
+          setRunningJobId(null);
           return;
         }
-        const s = (await res.json()) as { status?: string };
-        await load();
+        const s = (await res.json()) as {
+          status?: string;
+          progress?: number;
+          updatedAt?: string;
+          error?: string;
+        };
+        setJobs((prev) =>
+          prev.map((job) =>
+            job.id === jobId
+              ? {
+                  ...job,
+                  status: s.status ?? job.status,
+                  progress: s.progress ?? job.progress,
+                  updatedAt: s.updatedAt ?? job.updatedAt,
+                  error: s.error ?? job.error,
+                }
+              : job
+          )
+        );
         if (s.status === "transcript_complete" || s.status === "failed") {
+          setRunningJobId(null);
+          await load();
           return;
         }
       } catch {
+        setRunningJobId(null);
         return;
       }
     }
+    setRunningJobId(null);
   }
 
   async function submitFile(e: React.FormEvent) {
@@ -748,14 +708,20 @@ function ProjectDetailContent() {
                 {transcriptData.segments.length === 0 ? (
                   <p className="text-xs text-zinc-500">No transcript segments available.</p>
                 ) : (
-                  transcriptData.segments.map((seg, idx) => (
-                    <div key={`${seg.start}-${seg.end}-${idx}`} className="rounded-md border border-white/5 bg-white/[0.02] p-2.5">
-                      <p className="mb-1 text-[11px] font-mono text-cyan-400/90">
-                        [{fmtTs(seg.start)} - {fmtTs(seg.end)}]
-                      </p>
-                      <p className="text-sm leading-relaxed text-zinc-200">{seg.text}</p>
-                    </div>
-                  ))
+                  transcriptData.segments.map((seg, idx) => {
+                    const conf = segmentConfidence(seg.start, seg.end);
+                    return (
+                      <div key={`${seg.start}-${seg.end}-${idx}`} className="rounded-md border border-white/5 bg-white/[0.02] p-2.5">
+                        <p className="mb-1 flex items-center justify-between gap-3 text-[11px] font-mono text-cyan-400/90">
+                          [{fmtTs(seg.start)} - {fmtTs(seg.end)}]
+                          {conf !== null && (
+                            <span className="text-zinc-400">score: {(conf * 100).toFixed(1)}%</span>
+                          )}
+                        </p>
+                        <p className="text-sm leading-relaxed text-zinc-200">{seg.text}</p>
+                      </div>
+                    );
+                  })
                 )}
               </div>
             </div>
