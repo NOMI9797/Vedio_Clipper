@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -17,4 +17,14 @@ export async function putObjectToLocalDir(
   await mkdir(dirname(fullPath), { recursive: true });
   const out = createWriteStream(fullPath, { highWaterMark: 1024 * 1024 });
   await pipeline(body, out);
+}
+
+export async function putLocalTextFile(
+  root: string,
+  key: string,
+  data: string
+): Promise<void> {
+  const fullPath = join(root, key);
+  await mkdir(dirname(fullPath), { recursive: true });
+  await writeFile(fullPath, data, "utf8");
 }

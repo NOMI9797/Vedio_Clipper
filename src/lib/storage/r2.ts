@@ -1,4 +1,6 @@
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { createWriteStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 
 export type R2Env = {
@@ -45,6 +47,43 @@ export async function putObjectFromNodeStream(
       Body: body,
       ContentType: contentType,
       ContentLength: contentLength,
+    })
+  );
+}
+
+/**
+ * Download an object to a local file path (e.g. for FFmpeg processing).
+ */
+export async function getObjectToFile(
+  s3: S3Client,
+  bucket: string,
+  key: string,
+  destPath: string
+): Promise<void> {
+  const res = await s3.send(
+    new GetObjectCommand({ Bucket: bucket, Key: key })
+  );
+  if (!res.Body) {
+    throw new Error("Empty S3 object body");
+  }
+  const out = createWriteStream(destPath, { highWaterMark: 1024 * 1024 });
+  await pipeline(res.Body as NodeJS.ReadableStream, out);
+}
+
+export async function putObjectJson(
+  s3: S3Client,
+  bucket: string,
+  key: string,
+  data: string
+): Promise<void> {
+  const body = Buffer.from(data, "utf8");
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: body,
+      ContentType: "application/json",
+      ContentLength: body.length,
     })
   );
 }

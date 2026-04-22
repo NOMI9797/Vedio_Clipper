@@ -8,9 +8,15 @@ import { apiFetch } from "@/lib/api/client";
 import { JobStatusBadge, ProjectStatusBadge } from "@/components/projects/StatusBadge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Cloud, Link2, Loader2, Table2, Upload } from "lucide-react";
+import { Cloud, FileJson, Link2, Loader2, Mic, Table2, Upload } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -50,6 +56,14 @@ function ProjectDetailContent() {
     text: string;
   } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [runningJobId, setRunningJobId] = useState<string | null>(null);
+  const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const [transcriptJobId, setTranscriptJobId] = useState<string | null>(null);
+  const [transcriptBody, setTranscriptBody] = useState<string | null>(null);
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
+  const [transcriptFetchError, setTranscriptFetchError] = useState<string | null>(
+    null
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -94,11 +108,86 @@ function ProjectDetailContent() {
     if (!toast) {
       return;
     }
+    const ms = toast.length > 120 ? 4500 : 2000;
     const timer = window.setTimeout(() => {
       setToast(null);
-    }, 2000);
+    }, ms);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
+  async function openTranscriptViewer(jobId: string) {
+    setTranscriptJobId(jobId);
+    setTranscriptOpen(true);
+    setTranscriptBody(null);
+    setTranscriptFetchError(null);
+    setTranscriptLoading(true);
+    try {
+      const res = await apiFetch(
+        `/api/projects/${id}/transcript?jobId=${encodeURIComponent(jobId)}`
+      );
+      const raw = await res.text();
+      if (!res.ok) {
+        let msg = raw;
+        try {
+          const j = JSON.parse(raw) as { error?: string };
+          if (j.error) {
+            msg = j.error;
+          }
+        } catch {
+          // use raw
+        }
+        setTranscriptFetchError(msg);
+        return;
+      }
+      try {
+        setTranscriptBody(JSON.stringify(JSON.parse(raw), null, 2));
+      } catch {
+        setTranscriptBody(raw);
+      }
+    } catch (e) {
+      setTranscriptFetchError(
+        e instanceof Error ? e.message : "Could not load transcript"
+      );
+    } finally {
+      setTranscriptLoading(false);
+    }
+  }
+
+  async function runTranscriptionForJob(jobId: string) {
+    setRunningJobId(jobId);
+    setMessage(null);
+    try {
+      const res = await apiFetch(
+        `/api/worker/transcribe?jobId=${encodeURIComponent(jobId)}`,
+        {
+        method: "POST",
+        }
+      );
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        processed?: number;
+        errors?: string[];
+        ok?: boolean;
+        jobId?: string;
+      };
+      if (!res.ok) {
+        setMessage({
+          kind: "err",
+          text: body.error ?? body.errors?.[0] ?? `Transcription worker failed (${res.status})`,
+        });
+        return;
+      }
+      setToast(`Transcription started for job ${body.jobId ?? jobId}.`);
+      await load();
+    } catch (e) {
+      setMessage({
+        kind: "err",
+        text: e instanceof Error ? e.message : "Worker request failed",
+      });
+    } finally {
+      setRunningJobId(null);
+    }
+  }
 
   async function submitFile(e: React.FormEvent) {
     e.preventDefault();
@@ -390,6 +479,26 @@ function ProjectDetailContent() {
       </Tabs>
       </div>
 
+      <div className="mx-auto w-full max-w-3xl space-y-3 rounded-2xl border border-zinc-800/60 bg-zinc-950/50 p-4 sm:p-5">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 rounded-lg bg-violet-500/15 p-2 text-violet-300">
+            <Mic className="h-4 w-4" aria-hidden />
+          </div>
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="text-sm font-medium text-foreground">Transcription (US-05)</p>
+            <p className="text-xs text-zinc-500">
+              Runs on the server: FFmpeg (16 kHz mono WAV) → Deepgram. After you upload a
+              file/link, use <span className="text-zinc-400">Run</span> in the jobs table for
+              that specific row. Watch the <strong className="text-zinc-400">terminal</strong>{" "}
+              where <code className="rounded bg-white/5 px-1">npm run dev</code> is running
+              for step logs (<code className="rounded bg-white/5 px-1">[transcription:US-05]</code>
+              ). When status is <span className="text-emerald-400/90">Transcript complete</span>
+              , open the transcript from the table below.
+            </p>
+          </div>
+        </div>
+      </div>
+
       <section className="mx-auto w-full max-w-6xl space-y-4" aria-label="Project jobs">
         <div className="flex items-center gap-2.5 text-sm font-medium text-zinc-400">
           <Table2 className="h-4 w-4 text-zinc-500" />
@@ -405,12 +514,13 @@ function ProjectDetailContent() {
             role="region"
             aria-label="Jobs list"
           >
-            <table className="w-full min-w-[880px] table-fixed text-left text-sm">
+            <table className="w-full min-w-[980px] table-fixed text-left text-sm">
               <colgroup>
                 <col className="w-[10%]" />
                 <col className="w-[14%]" />
-                <col className="w-[56%]" />
-                <col className="w-[20%]" />
+                <col className="w-[46%]" />
+                <col className="w-[15%]" />
+                <col className="w-[15%]" />
               </colgroup>
               <thead>
                 <tr className="border-b border-zinc-800/80 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
@@ -425,6 +535,9 @@ function ProjectDetailContent() {
                   </th>
                   <th scope="col" className="p-3.5 pr-4">
                     Created
+                  </th>
+                  <th scope="col" className="p-3.5 pr-4">
+                    Run
                   </th>
                 </tr>
               </thead>
@@ -442,11 +555,46 @@ function ProjectDetailContent() {
                     </td>
                     <td className="p-3.5 align-top text-xs text-zinc-400">
                       <span className="block break-all">
-                        {j.sourceUrl ?? (j.objectKey ? "File upload" : "—")}
+                        {j.sourceUrl ? "Video link" : j.objectKey ? "File upload" : "—"}
                       </span>
+                      {j.status === "transcript_complete" && (
+                        <Button
+                          type="button"
+                          variant="link"
+                          className="mt-1.5 h-auto p-0 text-xs text-cyan-400"
+                          onClick={() => void openTranscriptViewer(j.id)}
+                        >
+                          <FileJson className="mr-1 h-3.5 w-3.5" />
+                          View transcript JSON
+                        </Button>
+                      )}
                     </td>
                     <td className="p-3.5 pr-4 align-top text-xs text-zinc-500">
                       {new Date(j.createdAt).toLocaleString()}
+                    </td>
+                    <td className="p-3.5 pr-4 align-top">
+                      {j.status === "transcript_complete" ? (
+                        <Button type="button" variant="outline" size="sm" disabled>
+                          Completed
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={runningJobId !== null || j.status === "processing"}
+                          onClick={() => void runTranscriptionForJob(j.id)}
+                        >
+                          {runningJobId === j.id ? (
+                            <>
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              Running…
+                            </>
+                          ) : (
+                            "Run"
+                          )}
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -461,6 +609,44 @@ function ProjectDetailContent() {
           {toast}
         </div>
       )}
+
+      <Dialog
+        open={transcriptOpen}
+        onOpenChange={(o) => {
+          setTranscriptOpen(o);
+          if (!o) {
+            setTranscriptJobId(null);
+            setTranscriptBody(null);
+            setTranscriptFetchError(null);
+          }
+        }}
+      >
+        <DialogContent className="max-h-[min(80vh,720px)] max-w-3xl overflow-hidden sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="text-base">
+              Transcript
+              {transcriptJobId ? (
+                <span className="ml-2 font-mono text-xs text-zinc-500">
+                  {transcriptJobId}
+                </span>
+              ) : null}
+            </DialogTitle>
+          </DialogHeader>
+          {transcriptLoading && (
+            <p className="flex items-center gap-2 text-sm text-zinc-400">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+            </p>
+          )}
+          {transcriptFetchError && (
+            <p className="text-sm text-rose-400">{transcriptFetchError}</p>
+          )}
+          {transcriptBody && !transcriptLoading && (
+            <pre className="max-h-[min(60vh,560px)] overflow-auto rounded-lg border border-white/10 bg-zinc-950/80 p-3 text-left text-xs leading-relaxed text-zinc-300">
+              {transcriptBody}
+            </pre>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
