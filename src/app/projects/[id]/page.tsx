@@ -5,6 +5,7 @@ import { useParams, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 import { apiFetch } from "@/lib/api/client";
+import type { StoredTranscript } from "@/lib/transcription/transcript-types";
 import { JobStatusBadge, ProjectStatusBadge } from "@/components/projects/StatusBadge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -59,7 +60,7 @@ function ProjectDetailContent() {
   const [runningJobId, setRunningJobId] = useState<string | null>(null);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [transcriptJobId, setTranscriptJobId] = useState<string | null>(null);
-  const [transcriptBody, setTranscriptBody] = useState<string | null>(null);
+  const [transcriptData, setTranscriptData] = useState<StoredTranscript | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [transcriptFetchError, setTranscriptFetchError] = useState<string | null>(
     null
@@ -115,16 +116,88 @@ function ProjectDetailContent() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    const active = jobs.some((j) => j.status === "queued" || j.status === "processing");
+    if (!active) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void load();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [jobs, load]);
+
+  useEffect(() => {
+    if (!id) {
+      return;
+    }
+    let cancelled = false;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let eventName = "";
+    let dataBuffer = "";
+
+    const parseChunk = async (chunk: Uint8Array) => {
+      buffer += decoder.decode(chunk, { stream: true });
+      const parts = buffer.split("\n");
+      buffer = parts.pop() ?? "";
+      for (const rawLine of parts) {
+        const line = rawLine.replace(/\r$/, "");
+        if (line.startsWith("event:")) {
+          eventName = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          const piece = line.slice(5).trim();
+          dataBuffer = dataBuffer ? `${dataBuffer}\n${piece}` : piece;
+        } else if (line === "") {
+          if (eventName === "job:status_update" && dataBuffer) {
+            await load();
+          }
+          eventName = "";
+          dataBuffer = "";
+        }
+      }
+    };
+
+    const run = async () => {
+      try {
+        const res = await apiFetch("/api/jobs/status-stream", {
+          method: "GET",
+          headers: { Accept: "text/event-stream" },
+        });
+        if (!res.ok || !res.body) {
+          return;
+        }
+        reader = res.body.getReader();
+        while (!cancelled) {
+          const part = await reader.read();
+          if (part.done) {
+            break;
+          }
+          await parseChunk(part.value);
+        }
+      } catch {
+        // polling effect above still keeps statuses fresh
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+      if (reader) {
+        void reader.cancel();
+      }
+    };
+  }, [id, load]);
+
   async function openTranscriptViewer(jobId: string) {
     setTranscriptJobId(jobId);
     setTranscriptOpen(true);
-    setTranscriptBody(null);
+    setTranscriptData(null);
     setTranscriptFetchError(null);
     setTranscriptLoading(true);
     try {
-      const res = await apiFetch(
-        `/api/projects/${id}/transcript?jobId=${encodeURIComponent(jobId)}`
-      );
+      const res = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/transcript`);
       const raw = await res.text();
       if (!res.ok) {
         let msg = raw;
@@ -139,11 +212,7 @@ function ProjectDetailContent() {
         setTranscriptFetchError(msg);
         return;
       }
-      try {
-        setTranscriptBody(JSON.stringify(JSON.parse(raw), null, 2));
-      } catch {
-        setTranscriptBody(raw);
-      }
+      setTranscriptData(JSON.parse(raw) as StoredTranscript);
     } catch (e) {
       setTranscriptFetchError(
         e instanceof Error ? e.message : "Could not load transcript"
@@ -151,6 +220,15 @@ function ProjectDetailContent() {
     } finally {
       setTranscriptLoading(false);
     }
+  }
+
+  function fmtTs(seconds: number): string {
+    const total = Math.max(0, Math.floor(seconds));
+    const m = Math.floor(total / 60)
+      .toString()
+      .padStart(2, "0");
+    const s = (total % 60).toString().padStart(2, "0");
+    return `${m}:${s}`;
   }
 
   async function runTranscriptionForJob(jobId: string) {
@@ -178,6 +256,7 @@ function ProjectDetailContent() {
         return;
       }
       setToast(`Transcription started for job ${body.jobId ?? jobId}.`);
+      void pollJobStatus(jobId);
       await load();
     } catch (e) {
       setMessage({
@@ -186,6 +265,25 @@ function ProjectDetailContent() {
       });
     } finally {
       setRunningJobId(null);
+    }
+  }
+
+  async function pollJobStatus(jobId: string) {
+    for (let i = 0; i < 24; i += 1) {
+      await new Promise((r) => window.setTimeout(r, 2500));
+      try {
+        const res = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/status`);
+        if (!res.ok) {
+          return;
+        }
+        const s = (await res.json()) as { status?: string };
+        await load();
+        if (s.status === "transcript_complete" || s.status === "failed") {
+          return;
+        }
+      } catch {
+        return;
+      }
     }
   }
 
@@ -616,7 +714,7 @@ function ProjectDetailContent() {
           setTranscriptOpen(o);
           if (!o) {
             setTranscriptJobId(null);
-            setTranscriptBody(null);
+            setTranscriptData(null);
             setTranscriptFetchError(null);
           }
         }}
@@ -640,10 +738,27 @@ function ProjectDetailContent() {
           {transcriptFetchError && (
             <p className="text-sm text-rose-400">{transcriptFetchError}</p>
           )}
-          {transcriptBody && !transcriptLoading && (
-            <pre className="max-h-[min(60vh,560px)] overflow-auto rounded-lg border border-white/10 bg-zinc-950/80 p-3 text-left text-xs leading-relaxed text-zinc-300">
-              {transcriptBody}
-            </pre>
+          {transcriptData && !transcriptLoading && (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-white/10 bg-zinc-950/60 px-3 py-2 text-xs text-zinc-400">
+                <span>Provider: {transcriptData.provider}</span>
+                <span className="ml-3">Language: {transcriptData.language}</span>
+              </div>
+              <div className="max-h-[min(60vh,560px)] space-y-2 overflow-auto rounded-lg border border-white/10 bg-zinc-950/80 p-3">
+                {transcriptData.segments.length === 0 ? (
+                  <p className="text-xs text-zinc-500">No transcript segments available.</p>
+                ) : (
+                  transcriptData.segments.map((seg, idx) => (
+                    <div key={`${seg.start}-${seg.end}-${idx}`} className="rounded-md border border-white/5 bg-white/[0.02] p-2.5">
+                      <p className="mb-1 text-[11px] font-mono text-cyan-400/90">
+                        [{fmtTs(seg.start)} - {fmtTs(seg.end)}]
+                      </p>
+                      <p className="text-sm leading-relaxed text-zinc-200">{seg.text}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
           )}
         </DialogContent>
       </Dialog>

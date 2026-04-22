@@ -10,6 +10,7 @@ import { extractWav16kMono } from "@/lib/transcription/ffmpeg-wav";
 import { transcribeWavWithOpenAI } from "@/lib/transcription/openai-whisper";
 import { db } from "@/lib/db";
 import { jobs, projects, type Job } from "@/lib/db/schema";
+import { publishJobStatusUpdate } from "@/lib/jobs/status-events";
 
 const FFMPEG_BIN = process.env.FFMPEG_PATH?.trim();
 
@@ -142,14 +143,26 @@ async function runClaimedTranscriptionJob(next: Job): Promise<{
 
   const fail = async (message: string) => {
     console.error(`${LOG} FAILED job=${jobId}`, message);
+    const updatedAt = new Date();
     await db
       .update(jobs)
       .set({
         status: "failed",
         error: message.slice(0, 4000),
-        updatedAt: new Date(),
+        progress: 100,
+        updatedAt,
       })
       .where(eq(jobs.id, jobId));
+    publishJobStatusUpdate({
+      event: "job:status_update",
+      jobId,
+      projectId,
+      userId: next.userId,
+      status: "failed",
+      progress: 100,
+      updatedAt: updatedAt.toISOString(),
+      error: message.slice(0, 4000),
+    });
     await db
       .update(projects)
       .set({ status: "failed", updatedAt: new Date() })
@@ -158,6 +171,21 @@ async function runClaimedTranscriptionJob(next: Job): Promise<{
 
   let cleanup: (() => Promise<void>) | null = null;
   try {
+    const processingAt = new Date();
+    await db
+      .update(jobs)
+      .set({ progress: 5, error: null, updatedAt: processingAt })
+      .where(eq(jobs.id, jobId));
+    publishJobStatusUpdate({
+      event: "job:status_update",
+      jobId,
+      projectId,
+      userId: next.userId,
+      status: "processing",
+      progress: 5,
+      updatedAt: processingAt.toISOString(),
+      error: null,
+    });
     logStep("status=processing", `job=${jobId}`);
     const engine = pickTranscriber();
     logStep("transcriber", engine.kind);
@@ -176,6 +204,10 @@ async function runClaimedTranscriptionJob(next: Job): Promise<{
     }
     const { mediaPath, cleanup: c } = downloadResult;
     cleanup = c;
+    await db
+      .update(jobs)
+      .set({ progress: 25, updatedAt: new Date() })
+      .where(eq(jobs.id, jobId));
     logStep("1/5 done", `localMedia=${mediaPath}`);
 
     const wav = join(dirname(mediaPath), "audio.wav");
@@ -184,6 +216,10 @@ async function runClaimedTranscriptionJob(next: Job): Promise<{
       FFMPEG_BIN ? `binary=${FFMPEG_BIN}` : "binary=ffmpeg (PATH)"
     );
     await extractWav16kMono(mediaPath, wav, { ffmpegBin: FFMPEG_BIN });
+    await db
+      .update(jobs)
+      .set({ progress: 45, updatedAt: new Date() })
+      .where(eq(jobs.id, jobId));
     logStep("2/5 done", `wav=${wav}`);
 
     logStep(
@@ -194,6 +230,10 @@ async function runClaimedTranscriptionJob(next: Job): Promise<{
       engine.kind === "deepgram"
         ? await transcribeWavWithDeepgram(wav, engine.key)
         : await transcribeWavWithOpenAI(wav, engine.key);
+    await db
+      .update(jobs)
+      .set({ progress: 75, updatedAt: new Date() })
+      .where(eq(jobs.id, jobId));
     logStep(
       "3/5 done",
       `language=${transcript.language} words=${transcript.words.length} segments=${transcript.segments.length}`
@@ -207,13 +247,33 @@ async function runClaimedTranscriptionJob(next: Job): Promise<{
     const storageKey = `processed/${jobId}/transcript.json`;
     logStep("4/5 write transcript JSON to object storage", storageKey);
     await putTranscriptJson(jobId, body);
+    await db
+      .update(jobs)
+      .set({ progress: 90, updatedAt: new Date() })
+      .where(eq(jobs.id, jobId));
     logStep("4/5 done", `${body.length} characters`);
 
     logStep("5/5 update database", "job=transcript_complete project=ready");
+    const doneAt = new Date();
     await db
       .update(jobs)
-      .set({ status: "transcript_complete", error: null, updatedAt: new Date() })
+      .set({
+        status: "transcript_complete",
+        progress: 100,
+        error: null,
+        updatedAt: doneAt,
+      })
       .where(eq(jobs.id, jobId));
+    publishJobStatusUpdate({
+      event: "job:status_update",
+      jobId,
+      projectId,
+      userId: next.userId,
+      status: "transcript_complete",
+      progress: 100,
+      updatedAt: doneAt.toISOString(),
+      error: null,
+    });
     await db
       .update(projects)
       .set({ status: "ready", updatedAt: new Date() })
