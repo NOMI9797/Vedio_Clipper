@@ -1,3 +1,62 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 14% 4%;
+    --foreground: 210 40% 98%;
+    --card: 240 12% 6%;
+    --card-foreground: 210 40% 98%;
+    --popover: 240 12% 6%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 265 90% 66%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 8% 14%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 240 8% 16%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 188 100% 45%;
+    --accent-foreground: 200 20% 6%;
+    --destructive: 0 70% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 8% 18%;
+    --input: 240 8% 16%;
+    --ring: 265 90% 66%;
+    --radius: 0.75rem;
+    --glow-violet: 265 90% 66%;
+    --glow-cyan: 188 100% 50%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply min-h-dvh bg-background text-foreground antialiased;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-gradient-to-r from-violet-300 via-fuchsia-200 to-cyan-300 bg-clip-text text-transparent;
+  }
+
+  .text-gradient-hero {
+    @apply bg-gradient-to-br from-white via-violet-100 to-cyan-200 bg-clip-text text-transparent;
+  }
+
+  .glow-line {
+    background: linear-gradient(
+      90deg,
+      transparent,
+      hsl(var(--glow-violet) / 0.4),
+      hsl(var(--glow-cyan) / 0.35),
+      transparent
+    );
+  }
+
+  .surface-glass {
+    @apply border border-white/10 bg-white/[0.04] shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset] backdrop-blur-xl;
+  }
+}

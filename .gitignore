@@ -31,5 +31,8 @@ yarn-error.log*
 # drizzle
 drizzle/
 
+# local object store (dev fallback)
+.local-object-store/
+
 # ts
 next-env.d.ts

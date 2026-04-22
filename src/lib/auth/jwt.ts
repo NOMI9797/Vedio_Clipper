@@ -1,8 +1,5 @@
 import * as jose from "jose";
 
-const ACCESS_TTL = "15m";
-const REFRESH_TTL = "7d";
-
 export type TokenUse = "access" | "refresh";
 
 function getSecret(): Uint8Array {
@@ -24,7 +21,6 @@ export async function createAccessToken(input: {
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(input.sub)
     .setIssuedAt()
-    .setExpirationTime(ACCESS_TTL)
     .sign(getSecret());
 }
 
@@ -39,7 +35,6 @@ export async function createRefreshToken(input: {
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(input.sub)
     .setIssuedAt()
-    .setExpirationTime(REFRESH_TTL)
     .sign(getSecret());
 }
 

@@ -1,5 +1,9 @@
 import type { FormEvent, ReactNode } from "react";
 
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+
 type Props = {
   title: string;
   children: ReactNode;
@@ -20,27 +24,30 @@ export function AuthFormFields({
   footer,
 }: Props) {
   return (
-    <div>
-      <h2 className="text-lg font-medium text-neutral-900">{title}</h2>
-      <form onSubmit={onSubmit} className="mt-6 space-y-4">
-        {children}
-        {error && (
-          <p
-            className="text-sm text-red-600"
-            role="alert"
+    <Card className="border-white/10 bg-zinc-950/40 shadow-2xl">
+      <CardHeader>
+        <CardTitle className="text-xl text-gradient-hero">{title}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={onSubmit} className="space-y-4">
+          {children}
+          {error && (
+            <Alert variant="destructive" className="border-rose-500/30">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+          <Button
+            type="submit"
+            variant="glow"
+            className="w-full"
+            size="lg"
+            disabled={isSubmitting}
           >
-            {error}
-          </p>
-        )}
-        <button
-          type="submit"
-          disabled={isSubmitting}
-          className="w-full rounded-md bg-neutral-900 py-2.5 text-sm font-medium text-white shadow-sm transition enabled:hover:bg-neutral-800 disabled:opacity-50"
-        >
-          {isSubmitting ? "Please wait…" : submitLabel}
-        </button>
-      </form>
-      <div className="mt-6 text-sm text-neutral-500">{footer}</div>
-    </div>
+            {isSubmitting ? "Please wait…" : submitLabel}
+          </Button>
+        </form>
+      </CardContent>
+      <CardFooter className="text-sm text-muted-foreground">{footer}</CardFooter>
+    </Card>
   );
 }

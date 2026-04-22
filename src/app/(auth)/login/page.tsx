@@ -1,14 +1,26 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 
 import { AuthFormFields } from "@/components/auth/AuthFormFields";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { setAuthTokens } from "@/lib/auth/client-tokens";
+
+const STUDIO_PATH = "/projects";
+
+function safeReturnPath(next: string | null): string {
+  if (!next || !next.startsWith("/") || next.startsWith("//")) {
+    return STUDIO_PATH;
+  }
+  return next;
+}
 
 export default function LoginPage() {
   const router = useRouter();
+  const search = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -36,7 +48,8 @@ export default function LoginPage() {
     if (data.accessToken && data.refreshToken) {
       setAuthTokens(data.accessToken, data.refreshToken);
     }
-    router.push("/");
+    const dest = safeReturnPath(search.get("next"));
+    router.push(dest);
     router.refresh();
   }
 
@@ -52,40 +65,38 @@ export default function LoginPage() {
           New here?{" "}
           <Link
             href="/register"
-            className="font-medium text-neutral-900 underline-offset-2 hover:underline"
+            className="font-medium text-cyan-300/90 underline-offset-4 hover:underline"
           >
             Create an account
           </Link>
         </span>
       }
     >
-      <div>
-        <label htmlFor="email" className="block text-sm text-neutral-600">
+      <div className="space-y-2">
+        <Label htmlFor="email" className="text-zinc-300">
           Email
-        </label>
-        <input
+        </Label>
+        <Input
           id="email"
           name="email"
           type="email"
           autoComplete="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="mt-1.5 w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 shadow-sm outline-none transition focus:border-neutral-400"
           required
         />
       </div>
-      <div>
-        <label htmlFor="password" className="block text-sm text-neutral-600">
+      <div className="space-y-2">
+        <Label htmlFor="password" className="text-zinc-300">
           Password
-        </label>
-        <input
+        </Label>
+        <Input
           id="password"
           name="password"
           type="password"
           autoComplete="current-password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="mt-1.5 w-full rounded-md border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 shadow-sm outline-none transition focus:border-neutral-400"
           required
         />
       </div>

@@ -1,13 +1,15 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { GeistMono } from "geist/font/mono";
+import { GeistSans } from "geist/font/sans";
+
+import { cn } from "@/lib/utils";
 
 import "./globals.css";
 
-const inter = Inter({ subsets: ["latin"] });
-
 export const metadata: Metadata = {
-  title: "VedioClipper",
-  description: "AI-powered video clipping",
+  title: "VedioClipper — AI video workspace",
+  description:
+    "Ingest, transcribe, and clip video with a polished AI-powered workflow.",
 };
 
 export default function RootLayout({
@@ -16,8 +18,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className={inter.className}>{children}</body>
+    <html
+      lang="en"
+      className={cn(GeistSans.variable, GeistMono.variable, "dark")}
+      suppressHydrationWarning
+    >
+      <body
+        className={cn(GeistSans.className, "min-h-dvh antialiased selection:bg-violet-500/30")}
+      >
+        {children}
+      </body>
     </html>
   );
 }
