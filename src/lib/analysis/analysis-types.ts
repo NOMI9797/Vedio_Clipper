@@ -33,6 +33,9 @@ export type AnalysisResult = {
   /** true when OpenAI embeddings were used for semantic + boundary. */
   semanticWithEmbeddings?: boolean;
   segments: AnalyzedSegment[];
+  /** Pre-computed envelope (0–1) for UI; ~`waveformSamplesPerSec` bins per second of source. */
+  waveformPeaks?: number[];
+  waveformSamplesPerSec?: number;
 };
 
 /**
@@ -42,10 +45,18 @@ export type ClipManifestEntry = {
   clipId: string;
   start: number;
   end: number;
-  score: number;
+  /** AI score; null for user-added manual clips. */
+  score: number | null;
   transcript_excerpt: string;
   suggested_title: string;
-  selected: boolean;
+  /** When false, clip is deselected for render. Omitted in older manifests — treat as true. */
+  selected?: boolean;
+  /** Set when the user has adjusted in/out (PATCH start/end). */
+  edited?: boolean;
+  /** User-created clip (US-11). */
+  manual?: boolean;
+  /** Preview MP4 at `clips/{clipId}/preview.mp4` is available. */
+  preview_ready?: boolean;
 };
 
 export type ClipManifest = {

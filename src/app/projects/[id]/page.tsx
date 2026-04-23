@@ -17,7 +17,15 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Cloud, FileJson, Link2, Loader2, Mic, Table2, Upload } from "lucide-react";
+import {
+  Cloud,
+  FileJson,
+  Link2,
+  Loader2,
+  Mic,
+  Table2,
+  Upload,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -39,16 +47,6 @@ type JobRow = {
   error: string | null;
   createdAt: string;
   updatedAt: string;
-};
-
-type ClipEntry = {
-  clipId: string;
-  start: number;
-  end: number;
-  score: number;
-  transcript_excerpt: string;
-  suggested_title: string;
-  selected?: boolean;
 };
 
 function ProjectDetailContent() {
@@ -75,12 +73,6 @@ function ProjectDetailContent() {
   const [transcriptFetchError, setTranscriptFetchError] = useState<string | null>(
     null
   );
-  const [aiOpen, setAiOpen] = useState(false);
-  const [aiJobId, setAiJobId] = useState<string | null>(null);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState<string | null>(null);
-  const [aiClips, setAiClips] = useState<ClipEntry[]>([]);
-  const [aiThumbUrls, setAiThumbUrls] = useState<Record<string, string>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const analysisTriggeredRef = useRef(new Set<string>());
 
@@ -164,120 +156,6 @@ function ProjectDetailContent() {
       setTranscriptLoading(false);
     }
   }
-
-  async function openAiViewer(jobId: string) {
-    setAiJobId(jobId);
-    setAiOpen(true);
-    setAiLoading(true);
-    setAiError(null);
-    setAiClips([]);
-    try {
-      const res = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/clips`);
-      const raw = await res.text();
-      if (!res.ok) {
-        let msg = raw;
-        try {
-          const j = JSON.parse(raw) as { error?: string };
-          if (j.error) {
-            msg = j.error;
-          }
-        } catch {
-          // use raw
-        }
-        setAiError(msg);
-        return;
-      }
-      const body = JSON.parse(raw) as ClipEntry[] | { clips?: ClipEntry[] };
-      const clips = Array.isArray(body) ? body : (body.clips ?? []);
-      setAiClips(clips);
-    } catch (e) {
-      setAiError(e instanceof Error ? e.message : "Could not load AI results");
-    } finally {
-      setAiLoading(false);
-    }
-  }
-
-  async function setClipSelection(jobId: string, clipId: string, selected: boolean) {
-    try {
-      const res = await apiFetch(
-        `/api/jobs/${encodeURIComponent(jobId)}/clips/${encodeURIComponent(clipId)}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ selected }),
-        }
-      );
-      const raw = await res.text();
-      if (!res.ok) {
-        let msg = raw;
-        try {
-          const j = JSON.parse(raw) as { error?: string };
-          if (j.error) {
-            msg = j.error;
-          }
-        } catch {
-          // use raw
-        }
-        setAiError(msg);
-        return;
-      }
-      setAiError(null);
-      setAiClips((prev) =>
-        prev.map((c) => (c.clipId === clipId ? { ...c, selected } : c))
-      );
-    } catch (e) {
-      setAiError(e instanceof Error ? e.message : "Could not update clip selection");
-    }
-  }
-
-  useEffect(() => {
-    if (!aiOpen || !aiJobId || aiClips.length === 0) {
-      return;
-    }
-    let cancelled = false;
-    const created: string[] = [];
-
-    const run = async () => {
-      const entries: Array<[string, string]> = [];
-      await Promise.all(
-        aiClips.map(async (clip) => {
-        try {
-          const res = await apiFetch(
-            `/api/jobs/${encodeURIComponent(aiJobId)}/clips/${encodeURIComponent(
-              clip.clipId
-            )}/thumbnail`
-          );
-          if (!res.ok) {
-            return;
-          }
-          const blob = await res.blob();
-          const url = URL.createObjectURL(blob);
-          created.push(url);
-          entries.push([clip.clipId, url]);
-        } catch {
-          // keep missing thumbnail silent per-clip
-        }
-        })
-      );
-      if (cancelled) {
-        for (const u of created) {
-          URL.revokeObjectURL(u);
-        }
-        return;
-      }
-      setAiThumbUrls((prev) => {
-        for (const old of Object.values(prev)) {
-          URL.revokeObjectURL(old);
-        }
-        return Object.fromEntries(entries);
-      });
-    };
-
-    void run();
-    return () => {
-      cancelled = true;
-    };
-  }, [aiOpen, aiJobId, aiClips]);
 
   function fmtTs(seconds: number): string {
     const total = Math.max(0, Math.floor(seconds));
@@ -816,15 +694,13 @@ function ProjectDetailContent() {
                           </Button>
                           {(j.status === "analysis_complete" ||
                             j.status === "clips_ready") && (
-                            <Button
-                              type="button"
-                              variant="link"
-                              className="mt-1.5 h-auto p-0 text-xs text-emerald-400"
-                              onClick={() => void openAiViewer(j.id)}
+                            <Link
+                              href={`/projects/${id}/clips?jobId=${encodeURIComponent(j.id)}`}
+                              className="mt-1.5 inline-flex items-center text-xs text-emerald-400 hover:text-emerald-300"
                             >
                               <FileJson className="mr-1 h-3.5 w-3.5" />
-                              View AI clips
-                            </Button>
+                              View ready clips
+                            </Link>
                           )}
                         </>
                       )}
@@ -950,121 +826,6 @@ function ProjectDetailContent() {
                       </div>
                     );
                   })
-                )}
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={aiOpen}
-        onOpenChange={(o) => {
-          setAiOpen(o);
-          if (!o) {
-            setAiJobId(null);
-            setAiError(null);
-            setAiClips([]);
-            setAiThumbUrls((prev) => {
-              for (const url of Object.values(prev)) {
-                URL.revokeObjectURL(url);
-              }
-              return {};
-            });
-          }
-        }}
-      >
-        <DialogContent className="max-h-[min(84vh,760px)] max-w-4xl overflow-hidden sm:max-w-4xl">
-          <DialogHeader>
-            <DialogTitle className="text-base">
-              AI Results
-              {aiJobId ? (
-                <span className="ml-2 font-mono text-xs text-zinc-500">{aiJobId}</span>
-              ) : null}
-            </DialogTitle>
-          </DialogHeader>
-          {aiLoading && (
-            <p className="flex items-center gap-2 text-sm text-zinc-400">
-              <Loader2 className="h-4 w-4 animate-spin" /> Loading…
-            </p>
-          )}
-          {aiError && <p className="text-sm text-rose-400">{aiError}</p>}
-          {!aiLoading && !aiError && (
-            <div className="space-y-2">
-              <p className="text-xs font-medium uppercase tracking-wider text-zinc-400">
-                Ranked Clips ({aiClips.length}) · Selected{" "}
-                {aiClips.filter((c) => c.selected !== false).length}
-              </p>
-              <div className="max-h-[56vh] space-y-2 overflow-auto rounded-lg border border-white/10 bg-zinc-950/80 p-3">
-                {aiClips.length === 0 ? (
-                  <p className="text-xs text-zinc-500">No clip manifest entries found.</p>
-                ) : (
-                  aiClips.map((c) => (
-                    <div
-                      key={c.clipId}
-                      className={cn(
-                        "rounded-md border p-2.5",
-                        c.selected === false
-                          ? "border-rose-500/30 bg-rose-500/[0.03]"
-                          : "border-white/5 bg-white/[0.02]"
-                      )}
-                    >
-                      <div className="grid gap-3 sm:grid-cols-[180px_1fr]">
-                        {aiThumbUrls[c.clipId] ? (
-                          <img
-                            src={aiThumbUrls[c.clipId]}
-                            alt={`${c.suggested_title} thumbnail`}
-                            className="h-24 w-full rounded border border-white/10 object-cover"
-                            loading="lazy"
-                          />
-                        ) : (
-                          <div className="flex h-24 w-full items-center justify-center rounded border border-white/10 bg-zinc-900 text-[11px] text-zinc-500">
-                            Loading thumbnail…
-                          </div>
-                        )}
-                        <div className="min-w-0">
-                          <p className="text-xs font-medium text-emerald-300">
-                            {c.suggested_title} · {(c.score * 100).toFixed(1)}%
-                          </p>
-                          <p className="mt-1 text-[11px] font-mono text-zinc-400">
-                            [{fmtTs(c.start)} - {fmtTs(c.end)}]
-                          </p>
-                          <p className="mt-1 line-clamp-3 text-xs leading-relaxed text-zinc-300">
-                            {c.transcript_excerpt}
-                          </p>
-                          <div className="mt-2">
-                            {c.selected === false ? (
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() =>
-                                  aiJobId
-                                    ? void setClipSelection(aiJobId, c.clipId, true)
-                                    : undefined
-                                }
-                              >
-                                Keep clip
-                              </Button>
-                            ) : (
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() =>
-                                  aiJobId
-                                    ? void setClipSelection(aiJobId, c.clipId, false)
-                                    : undefined
-                                }
-                              >
-                                Deselect
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ))
                 )}
               </div>
             </div>

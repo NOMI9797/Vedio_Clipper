@@ -183,7 +183,7 @@ export function buildClipManifest(
     });
   }
 
-  clips.sort((a, b) => b.score - a.score);
+  clips.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 
   return {
     jobId,

@@ -1,4 +1,5 @@
 import { requireBearer } from "@/lib/auth/bearer";
+import { onClipPreviewEvent } from "@/lib/jobs/clip-preview-events";
 import { onJobStatusUpdate } from "@/lib/jobs/status-events";
 
 export const runtime = "nodejs";
@@ -28,6 +29,13 @@ export async function GET(request: Request) {
         send("job:status_update", update);
       });
 
+      const unsubscribeClip = onClipPreviewEvent((update) => {
+        if (update.userId !== auth.user.sub) {
+          return;
+        }
+        send("clip:preview_ready", update);
+      });
+
       const heartbeat = setInterval(() => {
         send("ping", { ts: new Date().toISOString() });
       }, 15000);
@@ -35,6 +43,7 @@ export async function GET(request: Request) {
       const close = () => {
         clearInterval(heartbeat);
         unsubscribe();
+        unsubscribeClip();
         try {
           controller.close();
         } catch {

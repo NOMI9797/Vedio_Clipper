@@ -1,7 +1,7 @@
 import { and, asc, eq } from "drizzle-orm";
 
 import { buildClipManifest } from "@/lib/analysis/clip-manifest";
-import type { ClipManifest } from "@/lib/analysis/analysis-types";
+import type { AnalysisResult, ClipManifest } from "@/lib/analysis/analysis-types";
 import { parseStoredTranscriptJson } from "@/lib/analysis/parse-stored-transcript";
 import { scoreTranscriptSegments } from "@/lib/analysis/segment-scoring";
 import { downloadObjectToTempFile } from "@/lib/storage/download-object-temp";
@@ -9,7 +9,9 @@ import { putProcessedBinary } from "@/lib/storage/put-processed-binary";
 import { getTranscriptJsonString } from "@/lib/storage/get-transcript-json";
 import { putProcessedJson } from "@/lib/storage/put-processed-json";
 import { extractFrameJpegAtSecond } from "@/lib/transcription/ffmpeg-frame";
+import { extractFullSourceWaveformPeaks } from "@/lib/transcription/extract-waveform-peaks";
 import { downloadSourceUrlToTempFile } from "@/lib/transcription/download-source-url-temp";
+import { requestClipPreviewRender } from "@/lib/clip/queue-clip-preview";
 import { db } from "@/lib/db";
 import { jobs, projects, type Job } from "@/lib/db/schema";
 import { publishJobStatusUpdate } from "@/lib/jobs/status-events";
@@ -43,6 +45,7 @@ export async function runAnalysisForJob(job: Job): Promise<void> {
   logStep("start", `job=${jobId}`);
 
   let analysisAt = new Date();
+  let mediaForThumbs: Awaited<ReturnType<typeof downloadObjectToTempFile>> | null = null;
   try {
     logStep("1/5 read transcript.json", `job=${jobId}`);
     const raw = await getTranscriptJsonString(jobId);
@@ -65,6 +68,35 @@ export async function runAnalysisForJob(job: Job): Promise<void> {
       "2/5 done",
       `segments=${analysis.segments.length} embeddings=${analysis.semanticWithEmbeddings ? "openai" : "tfidf"} top=[${topSeg}]`
     );
+
+    try {
+      mediaForThumbs = job.objectKey
+        ? await downloadObjectToTempFile(job.objectKey)
+        : job.sourceUrl
+          ? await downloadSourceUrlToTempFile(job.sourceUrl)
+          : null;
+    } catch (e) {
+      logStep("media download (waveform)", e instanceof Error ? e.message : String(e));
+    }
+
+    if (mediaForThumbs) {
+      try {
+        checkBudget(t0);
+        logStep("2.5/5 waveform peaks", "ffmpeg f32le");
+        const wf = await extractFullSourceWaveformPeaks(mediaForThumbs.mediaPath, {
+          ffmpegBin: FFMPEG_BIN,
+          samplesPerSec: 10,
+        });
+        (analysis as AnalysisResult).waveformPeaks = wf.peaks;
+        (analysis as AnalysisResult).waveformSamplesPerSec = wf.samplesPerSec;
+        logStep("2.5/5 done", `peaks=${wf.peaks.length} spc=${wf.samplesPerSec}`);
+      } catch (e) {
+        logStep(
+          "2.5/5 waveform skipped",
+          e instanceof Error ? e.message : String(e)
+        );
+      }
+    }
 
     logStep("3/5 write analysis.json", `processed/${jobId}/analysis.json`);
     await putProcessedJson(
@@ -109,11 +141,11 @@ export async function runAnalysisForJob(job: Job): Promise<void> {
       JSON.stringify(manifest, null, 2)
     );
     const topClip = [...manifest.clips]
-      .sort((a, b) => b.score - a.score)
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
       .slice(0, 3)
       .map(
         (c) =>
-          `${(c.score * 100).toFixed(1)}% [${c.start.toFixed(1)}-${c.end.toFixed(
+          `${((c.score ?? 0) * 100).toFixed(1)}% [${c.start.toFixed(1)}-${c.end.toFixed(
             1
           )}]`
       )
@@ -125,8 +157,19 @@ export async function runAnalysisForJob(job: Job): Promise<void> {
 
     checkBudget(t0);
     logStep("6/6 pre-render thumbnails", `clips=${manifest.clips.length}`);
-    const thumbCount = await preRenderClipThumbnails(job, manifest, t0);
+    const thumbCount = await preRenderClipThumbnails(job, manifest, t0, mediaForThumbs);
     logStep("6/6 done", `thumbnails=${thumbCount}`);
+
+    for (let i = 0; i < manifest.clips.length; i += 1) {
+      const c = manifest.clips[i]!;
+      const delay = 400 * (i + 1);
+      setTimeout(() => {
+        requestClipPreviewRender(jobId, c.clipId);
+      }, delay);
+    }
+    if (manifest.clips.length > 0) {
+      logStep("preview queue", `scheduled n=${manifest.clips.length} (staggered)`);
+    }
 
     const readyAt = new Date();
     await db
@@ -159,25 +202,33 @@ export async function runAnalysisForJob(job: Job): Promise<void> {
     const message = e instanceof Error ? e.message : String(e);
     await failAnalysisJob(job, message);
     throw e;
+  } finally {
+    if (mediaForThumbs) {
+      await mediaForThumbs.cleanup().catch(() => undefined);
+    }
   }
 }
 
 async function preRenderClipThumbnails(
   job: Job,
   manifest: ClipManifest,
-  t0: number
+  t0: number,
+  existingMedia: Awaited<ReturnType<typeof downloadObjectToTempFile>> | null
 ): Promise<number> {
   if (manifest.clips.length === 0) {
     return 0;
   }
-  const dl = job.objectKey
-    ? await downloadObjectToTempFile(job.objectKey)
-    : job.sourceUrl
-      ? await downloadSourceUrlToTempFile(job.sourceUrl)
-      : null;
+  const dl =
+    existingMedia ??
+    (job.objectKey
+      ? await downloadObjectToTempFile(job.objectKey)
+      : job.sourceUrl
+        ? await downloadSourceUrlToTempFile(job.sourceUrl)
+        : null);
   if (!dl) {
     throw new Error("No media source found for thumbnail pre-render");
   }
+  const shouldCleanup = !existingMedia;
   let created = 0;
   try {
     for (const clip of manifest.clips) {
@@ -191,7 +242,9 @@ async function preRenderClipThumbnails(
       created += 1;
     }
   } finally {
-    await dl.cleanup();
+    if (shouldCleanup) {
+      await dl.cleanup();
+    }
   }
   return created;
 }
