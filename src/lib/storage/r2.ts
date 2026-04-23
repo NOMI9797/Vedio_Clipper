@@ -87,3 +87,21 @@ export async function putObjectJson(
     })
   );
 }
+
+export async function putObjectBuffer(
+  s3: S3Client,
+  bucket: string,
+  key: string,
+  data: Buffer,
+  contentType: string
+): Promise<void> {
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: data,
+      ContentType: contentType,
+      ContentLength: data.length,
+    })
+  );
+}

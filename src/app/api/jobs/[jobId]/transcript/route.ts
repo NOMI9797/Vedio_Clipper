@@ -47,7 +47,11 @@ export async function GET(
       { status: 409 }
     );
   }
-  if (job.status !== "transcript_complete") {
+  const canRead =
+    job.status === "transcript_complete" ||
+    job.status === "analysis_complete" ||
+    job.status === "clips_ready";
+  if (!canRead) {
     return NextResponse.json(
       {
         status: job.status,

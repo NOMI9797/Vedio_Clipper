@@ -58,5 +58,11 @@ function humanizeJobError(raw: string | null): string {
   if (raw.includes("ffmpeg")) {
     return "Audio extraction failed while processing this media.";
   }
-  return "Transcription failed while processing this job. Please try again.";
+  if (raw.includes("Analysis exceeded")) {
+    return "Clip analysis took too long for this source. Try again or contact support.";
+  }
+  if (raw.includes("analysis") || raw.includes("clip")) {
+    return "Clip selection analysis failed. You can try running AI analysis again after the transcript is ready.";
+  }
+  return "This job failed during processing. Please try again.";
 }

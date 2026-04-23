@@ -22,6 +22,8 @@ export const jobStatusEnum = pgEnum("job_status", [
   "queued",
   "processing",
   "transcript_complete",
+  "analysis_complete",
+  "clips_ready",
   "failed",
 ]);
 

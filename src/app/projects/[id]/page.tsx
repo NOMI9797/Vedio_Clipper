@@ -41,6 +41,16 @@ type JobRow = {
   updatedAt: string;
 };
 
+type ClipEntry = {
+  clipId: string;
+  start: number;
+  end: number;
+  score: number;
+  transcript_excerpt: string;
+  suggested_title: string;
+  selected?: boolean;
+};
+
 function ProjectDetailContent() {
   const params = useParams();
   const searchParams = useSearchParams();
@@ -65,7 +75,14 @@ function ProjectDetailContent() {
   const [transcriptFetchError, setTranscriptFetchError] = useState<string | null>(
     null
   );
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiJobId, setAiJobId] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiClips, setAiClips] = useState<ClipEntry[]>([]);
+  const [aiThumbUrls, setAiThumbUrls] = useState<Record<string, string>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const analysisTriggeredRef = useRef(new Set<string>());
 
   const load = useCallback(async () => {
     if (!id) {
@@ -148,6 +165,120 @@ function ProjectDetailContent() {
     }
   }
 
+  async function openAiViewer(jobId: string) {
+    setAiJobId(jobId);
+    setAiOpen(true);
+    setAiLoading(true);
+    setAiError(null);
+    setAiClips([]);
+    try {
+      const res = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/clips`);
+      const raw = await res.text();
+      if (!res.ok) {
+        let msg = raw;
+        try {
+          const j = JSON.parse(raw) as { error?: string };
+          if (j.error) {
+            msg = j.error;
+          }
+        } catch {
+          // use raw
+        }
+        setAiError(msg);
+        return;
+      }
+      const body = JSON.parse(raw) as ClipEntry[] | { clips?: ClipEntry[] };
+      const clips = Array.isArray(body) ? body : (body.clips ?? []);
+      setAiClips(clips);
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : "Could not load AI results");
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  async function setClipSelection(jobId: string, clipId: string, selected: boolean) {
+    try {
+      const res = await apiFetch(
+        `/api/jobs/${encodeURIComponent(jobId)}/clips/${encodeURIComponent(clipId)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ selected }),
+        }
+      );
+      const raw = await res.text();
+      if (!res.ok) {
+        let msg = raw;
+        try {
+          const j = JSON.parse(raw) as { error?: string };
+          if (j.error) {
+            msg = j.error;
+          }
+        } catch {
+          // use raw
+        }
+        setAiError(msg);
+        return;
+      }
+      setAiError(null);
+      setAiClips((prev) =>
+        prev.map((c) => (c.clipId === clipId ? { ...c, selected } : c))
+      );
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : "Could not update clip selection");
+    }
+  }
+
+  useEffect(() => {
+    if (!aiOpen || !aiJobId || aiClips.length === 0) {
+      return;
+    }
+    let cancelled = false;
+    const created: string[] = [];
+
+    const run = async () => {
+      const entries: Array<[string, string]> = [];
+      await Promise.all(
+        aiClips.map(async (clip) => {
+        try {
+          const res = await apiFetch(
+            `/api/jobs/${encodeURIComponent(aiJobId)}/clips/${encodeURIComponent(
+              clip.clipId
+            )}/thumbnail`
+          );
+          if (!res.ok) {
+            return;
+          }
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          created.push(url);
+          entries.push([clip.clipId, url]);
+        } catch {
+          // keep missing thumbnail silent per-clip
+        }
+        })
+      );
+      if (cancelled) {
+        for (const u of created) {
+          URL.revokeObjectURL(u);
+        }
+        return;
+      }
+      setAiThumbUrls((prev) => {
+        for (const old of Object.values(prev)) {
+          URL.revokeObjectURL(old);
+        }
+        return Object.fromEntries(entries);
+      });
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [aiOpen, aiJobId, aiClips]);
+
   function fmtTs(seconds: number): string {
     const total = Math.max(0, Math.floor(seconds));
     const m = Math.floor(total / 60)
@@ -207,7 +338,7 @@ function ProjectDetailContent() {
   }
 
   async function pollJobStatus(jobId: string) {
-    for (let i = 0; i < 24; i += 1) {
+    for (let i = 0; i < 60; i += 1) {
       await new Promise((r) => window.setTimeout(r, 2500));
       try {
         const res = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/status`);
@@ -234,10 +365,30 @@ function ProjectDetailContent() {
               : job
           )
         );
-        if (s.status === "transcript_complete" || s.status === "failed") {
+        if (s.status === "failed") {
           setRunningJobId(null);
           await load();
           return;
+        }
+        if (s.status === "clips_ready") {
+          setRunningJobId(null);
+          await load();
+          return;
+        }
+        if (
+          s.status === "transcript_complete" &&
+          !analysisTriggeredRef.current.has(jobId)
+        ) {
+          analysisTriggeredRef.current.add(jobId);
+          const a = await apiFetch(
+            `/api/worker/analyze?jobId=${encodeURIComponent(jobId)}`,
+            { method: "POST" }
+          );
+          if (!a.ok) {
+            setRunningJobId(null);
+            void load();
+            return;
+          }
         }
       } catch {
         setRunningJobId(null);
@@ -245,6 +396,41 @@ function ProjectDetailContent() {
       }
     }
     setRunningJobId(null);
+  }
+
+  async function runAnalysisForJobRow(jobId: string) {
+    setRunningJobId(jobId);
+    setMessage(null);
+    analysisTriggeredRef.current.add(jobId);
+    try {
+      const res = await apiFetch(
+        `/api/worker/analyze?jobId=${encodeURIComponent(jobId)}`,
+        { method: "POST" }
+      );
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        errors?: string[];
+        ok?: boolean;
+        jobId?: string;
+      };
+      if (!res.ok) {
+        setMessage({
+          kind: "err",
+          text: body.error ?? body.errors?.[0] ?? `Analysis worker failed (${res.status})`,
+        });
+        setRunningJobId(null);
+        return;
+      }
+      setToast(`AI analysis started for job ${body.jobId ?? jobId}.`);
+      void pollJobStatus(jobId);
+      await load();
+    } catch (e) {
+      setMessage({
+        kind: "err",
+        text: e instanceof Error ? e.message : "Analysis request failed",
+      });
+      setRunningJobId(null);
+    }
   }
 
   async function submitFile(e: React.FormEvent) {
@@ -543,15 +729,15 @@ function ProjectDetailContent() {
             <Mic className="h-4 w-4" aria-hidden />
           </div>
           <div className="min-w-0 flex-1 space-y-1">
-            <p className="text-sm font-medium text-foreground">Transcription (US-05)</p>
+            <p className="text-sm font-medium text-foreground">Transcription &amp; AI clips (US-05+)</p>
             <p className="text-xs text-zinc-500">
-              Runs on the server: FFmpeg (16 kHz mono WAV) → Deepgram. After you upload a
-              file/link, use <span className="text-zinc-400">Run</span> in the jobs table for
-              that specific row. Watch the <strong className="text-zinc-400">terminal</strong>{" "}
-              where <code className="rounded bg-white/5 px-1">npm run dev</code> is running
-              for step logs (<code className="rounded bg-white/5 px-1">[transcription:US-05]</code>
-              ). When status is <span className="text-emerald-400/90">Transcript complete</span>
-              , open the transcript from the table below.
+              <span className="text-zinc-400">Transcribe:</span> FFmpeg → Deepgram — use{" "}
+              <span className="text-zinc-400">Run</span> on a row. <span className="text-zinc-400">AI:</span> when
+              the transcript is ready, <span className="text-zinc-400">Run AI</span> runs segment scoring
+              and builds the clip manifest (or it starts automatically right after transcribe). Terminal
+              logs: <code className="rounded bg-white/5 px-1">[transcription:US-05]</code> and{" "}
+              <code className="rounded bg-white/5 px-1">[analysis:US-07-08]</code>
+              .
             </p>
           </div>
         </div>
@@ -615,32 +801,65 @@ function ProjectDetailContent() {
                       <span className="block break-all">
                         {j.sourceUrl ? "Video link" : j.objectKey ? "File upload" : "—"}
                       </span>
-                      {j.status === "transcript_complete" && (
-                        <Button
-                          type="button"
-                          variant="link"
-                          className="mt-1.5 h-auto p-0 text-xs text-cyan-400"
-                          onClick={() => void openTranscriptViewer(j.id)}
-                        >
-                          <FileJson className="mr-1 h-3.5 w-3.5" />
-                          View transcript JSON
-                        </Button>
+                      {(j.status === "transcript_complete" ||
+                        j.status === "analysis_complete" ||
+                        j.status === "clips_ready") && (
+                        <>
+                          <Button
+                            type="button"
+                            variant="link"
+                            className="mt-1.5 h-auto p-0 text-xs text-cyan-400"
+                            onClick={() => void openTranscriptViewer(j.id)}
+                          >
+                            <FileJson className="mr-1 h-3.5 w-3.5" />
+                            View transcript JSON
+                          </Button>
+                          {(j.status === "analysis_complete" ||
+                            j.status === "clips_ready") && (
+                            <Button
+                              type="button"
+                              variant="link"
+                              className="mt-1.5 h-auto p-0 text-xs text-emerald-400"
+                              onClick={() => void openAiViewer(j.id)}
+                            >
+                              <FileJson className="mr-1 h-3.5 w-3.5" />
+                              View AI clips
+                            </Button>
+                          )}
+                        </>
                       )}
                     </td>
                     <td className="p-3.5 pr-4 align-top text-xs text-zinc-500">
                       {new Date(j.createdAt).toLocaleString()}
                     </td>
                     <td className="p-3.5 pr-4 align-top">
-                      {j.status === "transcript_complete" ? (
+                      {j.status === "clips_ready" ? (
                         <Button type="button" variant="outline" size="sm" disabled>
                           Completed
                         </Button>
-                      ) : (
+                      ) : j.status === "transcript_complete" ? (
                         <Button
                           type="button"
                           variant="outline"
                           size="sm"
-                          disabled={runningJobId !== null || j.status === "processing"}
+                          disabled={runningJobId !== null}
+                          onClick={() => void runAnalysisForJobRow(j.id)}
+                        >
+                          {runningJobId === j.id ? (
+                            <>
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              Running…
+                            </>
+                          ) : (
+                            "Run AI"
+                          )}
+                        </Button>
+                      ) : j.status === "queued" || j.status === "failed" ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={runningJobId !== null}
                           onClick={() => void runTranscriptionForJob(j.id)}
                         >
                           {runningJobId === j.id ? (
@@ -651,6 +870,15 @@ function ProjectDetailContent() {
                           ) : (
                             "Run"
                           )}
+                        </Button>
+                      ) : runningJobId === j.id ? (
+                        <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Working…
+                        </span>
+                      ) : (
+                        <Button type="button" variant="outline" size="sm" disabled>
+                          —
                         </Button>
                       )}
                     </td>
@@ -722,6 +950,121 @@ function ProjectDetailContent() {
                       </div>
                     );
                   })
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={aiOpen}
+        onOpenChange={(o) => {
+          setAiOpen(o);
+          if (!o) {
+            setAiJobId(null);
+            setAiError(null);
+            setAiClips([]);
+            setAiThumbUrls((prev) => {
+              for (const url of Object.values(prev)) {
+                URL.revokeObjectURL(url);
+              }
+              return {};
+            });
+          }
+        }}
+      >
+        <DialogContent className="max-h-[min(84vh,760px)] max-w-4xl overflow-hidden sm:max-w-4xl">
+          <DialogHeader>
+            <DialogTitle className="text-base">
+              AI Results
+              {aiJobId ? (
+                <span className="ml-2 font-mono text-xs text-zinc-500">{aiJobId}</span>
+              ) : null}
+            </DialogTitle>
+          </DialogHeader>
+          {aiLoading && (
+            <p className="flex items-center gap-2 text-sm text-zinc-400">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+            </p>
+          )}
+          {aiError && <p className="text-sm text-rose-400">{aiError}</p>}
+          {!aiLoading && !aiError && (
+            <div className="space-y-2">
+              <p className="text-xs font-medium uppercase tracking-wider text-zinc-400">
+                Ranked Clips ({aiClips.length}) · Selected{" "}
+                {aiClips.filter((c) => c.selected !== false).length}
+              </p>
+              <div className="max-h-[56vh] space-y-2 overflow-auto rounded-lg border border-white/10 bg-zinc-950/80 p-3">
+                {aiClips.length === 0 ? (
+                  <p className="text-xs text-zinc-500">No clip manifest entries found.</p>
+                ) : (
+                  aiClips.map((c) => (
+                    <div
+                      key={c.clipId}
+                      className={cn(
+                        "rounded-md border p-2.5",
+                        c.selected === false
+                          ? "border-rose-500/30 bg-rose-500/[0.03]"
+                          : "border-white/5 bg-white/[0.02]"
+                      )}
+                    >
+                      <div className="grid gap-3 sm:grid-cols-[180px_1fr]">
+                        {aiThumbUrls[c.clipId] ? (
+                          <img
+                            src={aiThumbUrls[c.clipId]}
+                            alt={`${c.suggested_title} thumbnail`}
+                            className="h-24 w-full rounded border border-white/10 object-cover"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="flex h-24 w-full items-center justify-center rounded border border-white/10 bg-zinc-900 text-[11px] text-zinc-500">
+                            Loading thumbnail…
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-emerald-300">
+                            {c.suggested_title} · {(c.score * 100).toFixed(1)}%
+                          </p>
+                          <p className="mt-1 text-[11px] font-mono text-zinc-400">
+                            [{fmtTs(c.start)} - {fmtTs(c.end)}]
+                          </p>
+                          <p className="mt-1 line-clamp-3 text-xs leading-relaxed text-zinc-300">
+                            {c.transcript_excerpt}
+                          </p>
+                          <div className="mt-2">
+                            {c.selected === false ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() =>
+                                  aiJobId
+                                    ? void setClipSelection(aiJobId, c.clipId, true)
+                                    : undefined
+                                }
+                              >
+                                Keep clip
+                              </Button>
+                            ) : (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() =>
+                                  aiJobId
+                                    ? void setClipSelection(aiJobId, c.clipId, false)
+                                    : undefined
+                                }
+                              >
+                                Deselect
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))
                 )}
               </div>
             </div>

@@ -22,8 +22,11 @@ function jobVariant(
   s: string
 ): NonNullable<VariantProps<typeof badgeVariants>["variant"]> {
   switch (s) {
+    case "clips_ready":
     case "transcript_complete":
       return "success";
+    case "analysis_complete":
+      return "default";
     case "failed":
       return "destructive";
     case "processing":

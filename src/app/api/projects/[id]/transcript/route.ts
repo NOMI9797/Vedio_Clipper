@@ -51,7 +51,11 @@ export async function GET(
   if (!job) {
     return NextResponse.json({ error: "Job not found" }, { status: 404 });
   }
-  if (job.status !== "transcript_complete") {
+  const canRead =
+    job.status === "transcript_complete" ||
+    job.status === "analysis_complete" ||
+    job.status === "clips_ready";
+  if (!canRead) {
     return NextResponse.json(
       { error: "Transcript not available for this job status" },
       { status: 409 }
