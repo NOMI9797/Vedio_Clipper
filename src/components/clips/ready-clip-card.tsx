@@ -21,6 +21,10 @@ type Props = {
   clip: ClipEntry;
   previewUrl: string | null;
   thumbUrl: string | null;
+  captionWords?: Array<{ start: number; end: number; word: string }>;
+  hookText?: string;
+  isSelected?: boolean;
+  onSelect?: () => void;
   /** This clip is allowed to play with sound (one at a time). */
   isActive?: boolean;
   onSetActive: (clipId: string | null) => void;
@@ -36,6 +40,10 @@ export function ReadyClipCard({
   clip: c,
   previewUrl,
   thumbUrl,
+  captionWords,
+  hookText,
+  isSelected = false,
+  onSelect,
   isActive = false,
   onSetActive,
   onEdit,
@@ -51,6 +59,9 @@ export function ReadyClipCard({
   const [dur, setDur] = useState(0);
   const lenSec = c.end - c.start;
   const scoreDisplay = c.score != null ? Math.round(c.score * 100) : null;
+  const absT = c.start + cur;
+  const activeCaption =
+    captionWords?.find((w) => absT >= w.start && absT < w.end)?.word ?? "";
 
   useEffect(() => {
     if (!isActive && vRef.current && !vRef.current.paused) {
@@ -125,8 +136,10 @@ export function ReadyClipCard({
         c.selected === false
           ? "opacity-50 ring-1 ring-rose-500/20"
           : "hover:border-zinc-600",
+        isSelected && "ring-1 ring-cyan-500/55 border-cyan-500/50",
         className
       )}
+      onClick={onSelect}
     >
       <div
         className="relative aspect-[9/16] w-full max-h-[200px] overflow-hidden bg-black"
@@ -227,9 +240,19 @@ export function ReadyClipCard({
             Edited
           </div>
         )}
+        {hookText && (
+          <div className="absolute left-1/2 top-1 z-[6] max-w-[88%] -translate-x-1/2 rounded-md bg-white px-1.5 py-1 text-center text-[8px] font-semibold leading-tight text-black shadow-sm sm:text-[9px]">
+            {hookText}
+          </div>
+        )}
         {c.manual && (
           <div className="absolute bottom-4 left-1 z-10 rounded bg-amber-600/90 px-1 py-px text-[7px] font-bold uppercase text-white sm:text-[8px]">
             Manual
+          </div>
+        )}
+        {activeCaption && (
+          <div className="pointer-events-none absolute inset-x-1 bottom-6 z-10 px-1 py-1 text-center text-[11px] font-extrabold leading-tight text-white sm:text-[12px]">
+            {activeCaption}
           </div>
         )}
       </div>

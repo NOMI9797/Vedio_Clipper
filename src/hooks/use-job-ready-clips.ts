@@ -22,6 +22,8 @@ export function useJobReadyClips(jobId: string | null) {
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
   const clipsRef = useRef<ClipEntry[]>([]);
   clipsRef.current = clips;
+  const refetchInFlightRef = useRef(false);
+  const lastRefetchMsRef = useRef(0);
   const thumbRef = useRef<Record<string, string>>({});
   const previewRef = useRef<Record<string, string>>({});
   thumbRef.current = thumbUrls;
@@ -42,17 +44,31 @@ export function useJobReadyClips(jobId: string | null) {
     if (!jobId) {
       return;
     }
-    const res = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/clips`);
-    const raw = await res.text();
-    if (!res.ok) {
+    const now = Date.now();
+    // Guard against rapid repeated triggers from multiple timers/components.
+    if (refetchInFlightRef.current) {
       return;
     }
-    const j = JSON.parse(raw) as ClipsResponse;
-    if (Array.isArray(j)) {
-      setClips(j);
-    } else {
-      setSourceDurationSec(j.sourceDurationSec ?? 0);
-      setClips(j.clips ?? []);
+    if (now - lastRefetchMsRef.current < 4000) {
+      return;
+    }
+    refetchInFlightRef.current = true;
+    lastRefetchMsRef.current = now;
+    try {
+      const res = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/clips`);
+      const raw = await res.text();
+      if (!res.ok) {
+        return;
+      }
+      const j = JSON.parse(raw) as ClipsResponse;
+      if (Array.isArray(j)) {
+        setClips(j);
+      } else {
+        setSourceDurationSec(j.sourceDurationSec ?? 0);
+        setClips(j.clips ?? []);
+      }
+    } finally {
+      refetchInFlightRef.current = false;
     }
   }, [jobId]);
 
@@ -103,19 +119,6 @@ export function useJobReadyClips(jobId: string | null) {
       cancelled = true;
     };
   }, [jobId]);
-
-  useEffect(() => {
-    if (!jobId || clips.length === 0) {
-      return;
-    }
-    if (!clips.some((c) => c.previewReady !== true)) {
-      return;
-    }
-    const t = window.setInterval(() => {
-      void refetch();
-    }, 5000);
-    return () => window.clearInterval(t);
-  }, [jobId, clips, refetch]);
 
   useEffect(() => {
     if (!jobId || clips.length === 0) {
