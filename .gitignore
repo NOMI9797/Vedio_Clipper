@@ -36,3 +36,4 @@ drizzle/
 
 # ts
 next-env.d.ts
+*.tsbuildinfo

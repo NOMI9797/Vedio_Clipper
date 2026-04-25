@@ -120,7 +120,8 @@ export async function transcribeWavWithDeepgram(
 ): Promise<StoredTranscript> {
   const body = await readFile(wavPath);
   const params = new URLSearchParams({
-    model: "nova-2",
+    model: "nova-3",
+    language: "multi",
     smart_format: "true",
     punctuate: "true",
     utterances: "true",

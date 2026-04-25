@@ -8,11 +8,12 @@ import { apiFetch } from "@/lib/api/client";
 import { ReadyClipCard } from "@/components/clips/ready-clip-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useJobReadyClips } from "@/hooks/use-job-ready-clips";
+import { useJobClips } from "@/hooks/use-job-clips";
+import { useClipMediaUrls } from "@/hooks/use-clip-media-urls";
 import type { ClipEntry } from "@/lib/clips/clip-entry";
 import type { StoredTranscript } from "@/lib/transcription/transcript-types";
 import { cn } from "@/lib/utils";
-import { Loader2, Pause, Play } from "lucide-react";
+import { ArrowLeft, Loader2, Pause, Play, Zap } from "lucide-react";
 
 const MIN_CLIP_S = 10;
 const MAX_CLIP_S = 90;
@@ -23,16 +24,22 @@ type Props = {
 };
 
 export function ClipsView({ projectId, jobId }: Props) {
+  // Use React Query for clip list (cached, instant load)
   const {
     clips,
-    setClips,
     sourceDurationSec,
-    loading,
+    isLoading: clipsLoading,
+    isError,
     error,
-    refetch,
+    refetch: refetchClips,
+  } = useJobClips(jobId);
+
+  // Use separate hook for media URLs (thumbnails/previews with progressive loading)
+  const {
     thumbUrls,
     previewUrls,
-  } = useJobReadyClips(jobId);
+    loading: mediaLoading,
+  } = useClipMediaUrls(jobId, clips);
   const router = useRouter();
 
   const [activeClipId, setActiveClipId] = useState<string | null>(null);
@@ -88,6 +95,14 @@ export function ClipsView({ projectId, jobId }: Props) {
     };
   }, [jobId]);
 
+  // Local state for optimistic UI updates (clip selection)
+  const [localClips, setLocalClips] = useState<ClipEntry[]>(clips);
+
+  // Sync local clips with fetched clips
+  useEffect(() => {
+    setLocalClips(clips);
+  }, [clips]);
+
   useEffect(() => {
     if (!jobId) {
       return;
@@ -132,7 +147,7 @@ export function ClipsView({ projectId, jobId }: Props) {
               try {
                 const payload = JSON.parse(data) as { jobId?: string };
                 if (payload.jobId === jobId) {
-                  void refetch();
+                  void refetchClips();
                 }
               } catch {
                 // ignore malformed event payload
@@ -150,7 +165,7 @@ export function ClipsView({ projectId, jobId }: Props) {
       cancelled = true;
       ac.abort();
     };
-  }, [jobId, refetch]);
+  }, [jobId, refetchClips]);
 
   useEffect(() => {
     if (!toast) {
@@ -167,10 +182,10 @@ export function ClipsView({ projectId, jobId }: Props) {
     null;
 
   useEffect(() => {
-    if (!selectedClipId && clips.length > 0) {
-      setSelectedClipId(clips[0]!.clipId);
+    if (!selectedClipId && localClips.length > 0) {
+      setSelectedClipId(localClips[0]!.clipId);
     }
-  }, [selectedClipId, clips]);
+  }, [selectedClipId, localClips]);
 
   const selectedClipWords = useMemo(() => {
     if (!selectedClip || !clipTranscript?.words?.length) {
@@ -392,13 +407,13 @@ export function ClipsView({ projectId, jobId }: Props) {
       }
       setToast("Clip added. Encoding preview…");
       setManualAddOpen(false);
-      void refetch();
+      void refetchClips();
     } catch (e) {
       setToast(e instanceof Error ? e.message : "Failed to add");
     } finally {
       setManualBusy(false);
     }
-  }, [jobId, sourceDurationSec, manualWindow, refetch]);
+  }, [jobId, sourceDurationSec, manualWindow, refetchClips]);
 
   const downloadClip = useCallback(
     (clipId: string, title: string) => {
@@ -443,14 +458,15 @@ export function ClipsView({ projectId, jobId }: Props) {
           setToast(msg);
           return;
         }
-        setClips((prev) =>
+        // Optimistic update
+        setLocalClips((prev) =>
           prev.map((c) => (c.clipId === clipId ? { ...c, selected } : c))
         );
       } catch (e) {
         setToast(e instanceof Error ? e.message : "Update failed");
       }
     },
-    [jobId, setClips]
+    [jobId]
   );
 
   function fmtClipDuration(lenSec: number) {
@@ -502,61 +518,43 @@ export function ClipsView({ projectId, jobId }: Props) {
         </div>
       )}
 
-      <div className="border-b border-zinc-800/80">
-        <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-          <div>
-            <div className="flex items-center gap-2 text-sm text-zinc-500">
-              <Link
-                href={`/projects/${projectId}`}
-                className="hover:text-cyan-400/90"
-              >
-                ← Project
-              </Link>
+      <div className="border-b border-zinc-800/60 bg-zinc-950/80 backdrop-blur-sm sticky top-0 z-30">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+          <div className="flex items-center gap-3">
+            <Link
+              href={`/projects/${projectId}`}
+              className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-800/80 text-zinc-400 transition hover:bg-zinc-700 hover:text-white"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <div>
+              <h1 className="text-lg font-bold tracking-tight text-zinc-100">
+                Original clips
+                <span className="ml-2 text-sm font-normal text-zinc-500">({localClips.length})</span>
+              </h1>
             </div>
-            <h1 className="mt-1 text-xl font-semibold tracking-tight text-zinc-100">
-              Original clips ({clips.length})
-            </h1>
-            <p className="text-xs text-zinc-500">
-              Hover a card to show play — click the button for video and audio. Only one plays at
-              a time.
-            </p>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="text-zinc-400"
-              disabled
-              title="Coming later"
-            >
-              Select
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="text-zinc-400"
-              disabled
-            >
-              Filter
-            </Button>
-            <code className="max-w-[10rem] truncate rounded border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-[10px] text-zinc-500">
-              {jobId}
-            </code>
+            {localClips.length > 0 && (
+              <div className="flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-400">
+                <Zap className="h-3 w-3" />
+                {localClips.filter((c) => c.score != null && c.score * 100 >= 80).length} top clips
+              </div>
+            )}
           </div>
         </div>
       </div>
 
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
-        {loading && (
-          <p className="flex items-center gap-2 text-sm text-zinc-500">
-            <Loader2 className="h-4 w-4 animate-spin" /> Loading clips…
-          </p>
+        {clipsLoading && (
+          <div className="flex flex-col items-center justify-center gap-3 py-20">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-emerald-400" />
+            <p className="text-sm text-zinc-500">Loading clips...</p>
+          </div>
         )}
-        {error && <p className="text-sm text-rose-400">{error}</p>}
+        {isError && error && <p className="text-sm text-rose-400">{error}</p>}
 
-        {!loading && !error && clips.length > 0 && sourceDurationSec > 0 && (
+        {!clipsLoading && !isError && localClips.length > 0 && sourceDurationSec > 0 && (
           <div className="mb-8 rounded-xl border border-dashed border-cyan-500/25 bg-cyan-500/[0.03] p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-sm text-cyan-200/80">Add a manual clip (start / end in seconds)</p>
@@ -649,12 +647,12 @@ export function ClipsView({ projectId, jobId }: Props) {
           </div>
         )}
 
-        {!loading && !error && (
-          <div className="grid grid-cols-2 gap-x-3 gap-y-8 sm:grid-cols-4">
-            {clips.length === 0 ? (
+        {!clipsLoading && !isError && (
+          <div className="grid grid-cols-1 gap-5 xs:grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+            {localClips.length === 0 ? (
               <p className="col-span-full text-sm text-zinc-500">No clips for this job yet.</p>
             ) : (
-              clips.map((c) => (
+              localClips.map((c) => (
                 <ReadyClipCard
                   key={c.clipId}
                   clip={c}
@@ -681,34 +679,34 @@ export function ClipsView({ projectId, jobId }: Props) {
           </div>
         )}
 
-        {!loading && !error && selectedClip && (
-          <div className="mt-10 rounded-xl border border-white/10 bg-zinc-950/60 p-4">
+        {!clipsLoading && !isError && selectedClip && (
+          <div className="mt-8 rounded-2xl border border-zinc-800/80 bg-zinc-900/50 p-5">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-sm font-semibold text-zinc-200">Clip hook + transcription</p>
-              <p className="text-[11px] font-mono text-zinc-500">
-                [{fmtTs(selectedClip.start)} - {fmtTs(selectedClip.end)}]
-              </p>
+              <h3 className="text-sm font-bold text-zinc-100">Clip transcript</h3>
+              <span className="rounded-md bg-zinc-800 px-2 py-0.5 font-mono text-[11px] text-zinc-400">
+                {fmtTs(selectedClip.start)} — {fmtTs(selectedClip.end)}
+              </span>
             </div>
-            <div className="mt-2 rounded-md bg-zinc-900/80 p-2 text-sm font-semibold text-white">
+            <div className="mt-3 rounded-lg bg-emerald-500/5 border border-emerald-500/10 px-3 py-2 text-sm font-semibold text-emerald-300">
               {toHookText(selectedClip)}
             </div>
             {clipTranscriptLoading && (
-              <p className="mt-3 text-xs text-zinc-500">
-                <Loader2 className="mr-1 inline h-3.5 w-3.5 animate-spin" />
-                Loading transcription…
-              </p>
+              <div className="mt-4 flex items-center gap-2 text-xs text-zinc-500">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Loading transcript...
+              </div>
             )}
             {clipTranscriptErr && (
-              <p className="mt-3 text-xs text-amber-400/90">{clipTranscriptErr}</p>
+              <p className="mt-4 text-xs text-amber-400/90">{clipTranscriptErr}</p>
             )}
             {!clipTranscriptLoading && !clipTranscriptErr && (
-              <div className="mt-3 max-h-52 space-y-1 overflow-auto rounded-md border border-white/5 bg-black/30 p-2">
+              <div className="mt-4 max-h-52 space-y-1.5 overflow-auto rounded-lg bg-black/30 p-3">
                 {selectedTranscriptLines.length === 0 ? (
-                  <p className="text-xs text-zinc-500">No transcript lines in this clip range.</p>
+                  <p className="text-xs text-zinc-500">No transcript lines in this range.</p>
                 ) : (
                   selectedTranscriptLines.map((ln, idx) => (
-                    <p key={`${ln.start}-${idx}`} className="text-xs leading-relaxed text-zinc-300">
-                      <span className="mr-2 font-mono text-[10px] text-cyan-400/80">
+                    <p key={`${ln.start}-${idx}`} className="text-[13px] leading-relaxed text-zinc-300">
+                      <span className="mr-2 inline-block min-w-[3rem] font-mono text-[11px] text-emerald-400/70">
                         {fmtTs(ln.start)}
                       </span>
                       {ln.text}

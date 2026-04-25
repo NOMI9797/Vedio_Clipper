@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Calendar, Download, Pause, Play, Scissors, Share2 } from "lucide-react";
+import { Download, Pause, Play, Scissors, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import type { ClipEntry } from "@/lib/clips/clip-entry";
@@ -25,14 +25,12 @@ type Props = {
   hookText?: string;
   isSelected?: boolean;
   onSelect?: () => void;
-  /** This clip is allowed to play with sound (one at a time). */
   isActive?: boolean;
   onSetActive: (clipId: string | null) => void;
   onEdit: () => void;
   onDownload: () => void;
   onToggleSelect?: (selected: boolean) => void;
   fmtDuration: (lenSec: number) => string;
-  /** Disable play overlay on md+ when not hovering (always show on touch) */
   className?: string;
 };
 
@@ -129,20 +127,30 @@ export function ReadyClipCard({
     [c.clipId, onSetActive, playing, previewUrl]
   );
 
+  const scoreColor =
+    scoreDisplay != null
+      ? scoreDisplay >= 80
+        ? "text-emerald-400"
+        : scoreDisplay >= 60
+          ? "text-yellow-400"
+          : "text-orange-400"
+      : "text-zinc-500";
+
   return (
     <div
       className={cn(
-        "group flex w-full min-w-0 flex-col overflow-hidden rounded-xl border border-zinc-800/90 bg-zinc-950/90 shadow-md shadow-black/40 transition",
+        "group relative flex w-full min-w-0 flex-col overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/80 shadow-lg transition-all duration-200",
         c.selected === false
-          ? "opacity-50 ring-1 ring-rose-500/20"
-          : "hover:border-zinc-600",
-        isSelected && "ring-1 ring-cyan-500/55 border-cyan-500/50",
+          ? "opacity-40 grayscale"
+          : "hover:border-zinc-600 hover:shadow-xl hover:shadow-black/50",
+        isSelected && "ring-2 ring-emerald-500/60 border-emerald-500/40",
         className
       )}
       onClick={onSelect}
     >
+      {/* Video / thumbnail area */}
       <div
-        className="relative aspect-[9/16] w-full max-h-[200px] overflow-hidden bg-black"
+        className="relative aspect-[9/16] w-full overflow-hidden bg-black"
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
       >
@@ -154,7 +162,7 @@ export function ReadyClipCard({
             src={previewUrl}
             playsInline
             muted={!isActive}
-            preload="auto"
+            preload="none"
             onTimeUpdate={syncTime}
             onPlay={onVideoPlay}
             onPause={onVideoPause}
@@ -172,19 +180,35 @@ export function ReadyClipCard({
           <img
             src={thumbUrl}
             alt=""
+            loading="lazy"
             className="h-full w-full object-cover"
           />
         ) : (
-          <div className="flex h-full w-full items-center justify-center bg-zinc-900 px-1 text-center text-[10px] text-zinc-500">
-            {c.previewReady !== true ? "Encoding preview…" : "No media"}
+          <div className="flex h-full w-full items-center justify-center bg-gradient-to-b from-zinc-800 to-zinc-900 px-2 text-center text-xs text-zinc-500">
+            {c.previewReady !== true ? (
+              <div className="flex flex-col items-center gap-2">
+                <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-emerald-400" />
+                <span>Encoding...</span>
+              </div>
+            ) : (
+              "No media"
+            )}
           </div>
         )}
 
+        {/* Hook text overlay at top */}
+        {hookText && (
+          <div className="absolute left-1/2 top-2 z-[6] max-w-[92%] -translate-x-1/2 rounded-lg bg-white/95 px-2.5 py-1.5 text-center text-[11px] font-bold leading-tight text-black shadow-lg backdrop-blur-sm sm:text-xs">
+            {hookText}
+          </div>
+        )}
+
+        {/* Play / pause overlay */}
         {previewUrl && !playing && (
           <div
             className={cn(
-              "absolute inset-0 flex items-center justify-center transition-opacity",
-              "bg-black/20 max-md:opacity-100",
+              "absolute inset-0 flex items-center justify-center transition-opacity duration-200",
+              "bg-black/30 max-md:opacity-100",
               "md:opacity-0 md:group-hover:opacity-100"
             )}
           >
@@ -192,95 +216,80 @@ export function ReadyClipCard({
               type="button"
               size="icon"
               variant="secondary"
-              className="h-9 w-9 rounded-full border-0 bg-white/90 p-0 text-black shadow-md hover:bg-white"
+              className="h-12 w-12 rounded-full border-0 bg-white/95 p-0 text-black shadow-xl hover:bg-white hover:scale-110 transition-transform"
               onClick={togglePlay}
-              aria-label="Play clip with sound"
+              aria-label="Play clip"
             >
-              <Play className="h-4 w-4 fill-current" />
+              <Play className="h-5 w-5 fill-current ml-0.5" />
             </Button>
           </div>
         )}
 
         {previewUrl && playing && hover && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/20 transition-opacity">
+          <div className="absolute inset-0 flex items-center justify-center bg-black/30 transition-opacity duration-200">
             <Button
               type="button"
               size="icon"
               variant="secondary"
-              className="h-8 w-8 rounded-full border-0 bg-white/90 p-0 text-black shadow-md"
+              className="h-10 w-10 rounded-full border-0 bg-white/90 p-0 text-black shadow-lg"
               onClick={togglePlay}
               aria-label="Pause"
             >
-              <Pause className="h-3.5 w-3.5" />
+              <Pause className="h-4 w-4" />
             </Button>
           </div>
         )}
 
-        <div className="pointer-events-none absolute right-1 top-1 z-10 select-none rounded bg-black/80 px-1 py-0.5 font-mono text-[8px] leading-tight text-white sm:text-[9px]">
+        {/* Duration badge top-right */}
+        <div className="pointer-events-none absolute right-1.5 top-1.5 z-10 select-none rounded-md bg-black/70 px-1.5 py-0.5 font-mono text-[10px] leading-tight text-white/90 backdrop-blur-sm sm:text-[11px]">
           {dur > 0 ? (
-            <span>
-              {formatClock(cur)} {formatClock(dur)}
-            </span>
+            <span>{formatClock(cur)} {formatClock(dur)}</span>
           ) : (
             <span>00:00 {fmtDuration(lenSec)}</span>
           )}
         </div>
 
+        {/* Progress bar */}
         {dur > 0 && (
-          <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-0.5 bg-zinc-800/80">
+          <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-1 bg-black/40">
             <div
-              className="h-full bg-white/90"
+              className="h-full bg-emerald-400 transition-[width] duration-100"
               style={{ width: `${dur > 0 ? (cur / dur) * 100 : 0}%` }}
             />
           </div>
         )}
 
+        {/* Badges */}
         {c.edited && (
-          <div className="absolute left-0.5 top-0.5 z-[5] max-w-[46%] truncate rounded bg-amber-500/95 px-0.5 py-px text-[6px] font-bold uppercase text-black sm:text-[7px]">
+          <div className="absolute left-1.5 top-1.5 z-[5] rounded-md bg-amber-500 px-1.5 py-0.5 text-[9px] font-bold uppercase text-black sm:text-[10px]">
             Edited
           </div>
         )}
-        {hookText && (
-          <div className="absolute left-1/2 top-1 z-[6] max-w-[88%] -translate-x-1/2 rounded-md bg-white px-1.5 py-1 text-center text-[8px] font-semibold leading-tight text-black shadow-sm sm:text-[9px]">
-            {hookText}
-          </div>
-        )}
         {c.manual && (
-          <div className="absolute bottom-4 left-1 z-10 rounded bg-amber-600/90 px-1 py-px text-[7px] font-bold uppercase text-white sm:text-[8px]">
+          <div className="absolute bottom-2 left-1.5 z-10 rounded-md bg-amber-600/90 px-1.5 py-0.5 text-[9px] font-bold uppercase text-white sm:text-[10px]">
             Manual
           </div>
         )}
-        {activeCaption && (
-          <div className="pointer-events-none absolute inset-x-1 bottom-6 z-10 px-1 py-1 text-center text-[11px] font-extrabold uppercase leading-tight text-emerald-400 sm:text-[12px]">
+
+        {/* Live caption during playback */}
+        {activeCaption && playing && (
+          <div className="pointer-events-none absolute inset-x-2 bottom-4 z-10 rounded-md bg-black/60 px-2 py-1.5 text-center text-sm font-extrabold uppercase leading-tight text-emerald-400 backdrop-blur-sm">
             {activeCaption}
           </div>
         )}
       </div>
 
-      <div className="flex min-h-7 items-center justify-between gap-0 px-0.5 py-0.5">
-        {scoreDisplay != null ? (
-          <span className="pl-0.5 text-base font-bold leading-none tabular-nums text-emerald-400 sm:text-lg">
-            {scoreDisplay}
-          </span>
-        ) : (
-          <span className="pl-0.5 text-sm font-bold text-zinc-500">—</span>
-        )}
-        <div className="flex shrink-0 items-center -space-x-0.5">
+      {/* Score + actions row */}
+      <div className="flex items-center justify-between gap-1 px-3 pt-2.5 pb-1">
+        <span className={cn("text-2xl font-black tabular-nums leading-none", scoreColor)}>
+          {scoreDisplay ?? "—"}
+        </span>
+        <div className="flex shrink-0 items-center gap-0.5">
           <Button
             type="button"
             size="icon"
             variant="ghost"
-            className="h-6 w-6 text-rose-400/90 p-0"
-            title="Schedule (soon)"
-            disabled
-          >
-            <Calendar className="h-3 w-3" />
-          </Button>
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            className="h-6 w-6 p-0 text-sky-400/90"
+            className="h-7 w-7 p-0 text-zinc-400 hover:text-sky-400"
             title="Download preview"
             disabled={!previewUrl}
             onClick={(e) => {
@@ -288,66 +297,66 @@ export function ReadyClipCard({
               onDownload();
             }}
           >
-            <Download className="h-3 w-3" />
+            <Download className="h-3.5 w-3.5" />
           </Button>
           <Button
             type="button"
             size="icon"
             variant="ghost"
-            className="h-6 w-6 p-0 text-cyan-400/90"
+            className="h-7 w-7 p-0 text-zinc-400 hover:text-cyan-400"
             title="Edit clip"
             onClick={(e) => {
               e.stopPropagation();
               onEdit();
             }}
           >
-            <Scissors className="h-3 w-3" />
+            <Scissors className="h-3.5 w-3.5" />
           </Button>
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            className="h-6 w-6 p-0 text-zinc-500"
-            title="Share (soon)"
-            disabled
-          >
-            <Share2 className="h-3 w-3" />
-          </Button>
+          {onToggleSelect && c.selected !== false && (
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7 p-0 text-zinc-400 hover:text-rose-400"
+              title="Exclude clip"
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleSelect(false);
+              }}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          )}
         </div>
       </div>
-      <div className="px-1 pb-0.5">
-        <p className="line-clamp-2 text-[9px] font-semibold leading-tight text-zinc-100 sm:text-[10px]">
+
+      {/* Title + excerpt */}
+      <div className="px-3 pb-3">
+        <p className="line-clamp-2 text-[13px] font-semibold leading-snug text-zinc-100">
           {c.suggested_title}
         </p>
-        <p className="mt-0.5 line-clamp-2 text-[8px] leading-tight text-zinc-500 sm:text-[9px]">
+        <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-zinc-500">
           {c.transcript_excerpt}
         </p>
-        {onToggleSelect && (
-          <div className="mt-1">
-            {c.selected === false ? (
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                className="h-5 w-full px-0.5 text-[8px] sm:text-[9px]"
-                onClick={() => onToggleSelect(true)}
-              >
-                Include
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-5 w-full px-0.5 text-[8px] sm:text-[9px]"
-                onClick={() => onToggleSelect(false)}
-              >
-                Exclude
-              </Button>
-            )}
-          </div>
-        )}
       </div>
+
+      {/* Include button for excluded clips */}
+      {onToggleSelect && c.selected === false && (
+        <div className="border-t border-zinc-800 px-3 py-2">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="h-7 w-full text-xs"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleSelect(true);
+            }}
+          >
+            Include
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

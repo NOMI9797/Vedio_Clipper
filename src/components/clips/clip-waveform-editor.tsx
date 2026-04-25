@@ -43,6 +43,9 @@ type Props = {
   /** When preview is not ready, poll GET /clips to update `clip.previewReady`. */
   onClipsRefresh?: () => void | Promise<void>;
   fmtTs: (s: number) => string;
+  /** Optional pre-loaded media URLs from parent (React Query cache). */
+  thumbUrl?: string | null;
+  previewUrl?: string | null;
 };
 
 function pickWindow(
@@ -137,6 +140,8 @@ export function ClipWaveformEditor({
   onPatched,
   onClipsRefresh,
   fmtTs,
+  thumbUrl: thumbUrlProp,
+  previewUrl: previewUrlProp,
 }: Props) {
   const [inT, setInT] = useState(clip.start);
   const [outT, setOutT] = useState(clip.end);
@@ -159,8 +164,12 @@ export function ClipWaveformEditor({
 
   const trackRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
+  const [previewUrlFetched, setPreviewUrlFetched] = useState<string | null>(null);
+  const [thumbUrlFetched, setThumbUrlFetched] = useState<string | null>(null);
+
+  // Use prop values if provided, otherwise fall back to fetched values
+  const previewUrl = previewUrlProp ?? previewUrlFetched;
+  const thumbUrl = thumbUrlProp ?? thumbUrlFetched;
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const playheadRef = useRef(0);
@@ -239,7 +248,7 @@ export function ClipWaveformEditor({
 
   useEffect(() => {
     if (!open) {
-      setPreviewUrl((prev) => {
+      setPreviewUrlFetched((prev) => {
         if (prev) {
           URL.revokeObjectURL(prev);
         }
@@ -250,6 +259,10 @@ export function ClipWaveformEditor({
         videoRef.current.removeAttribute("src");
         void videoRef.current.load();
       }
+      return;
+    }
+    if (previewUrlProp) {
+      // Use the prop value, don't fetch
       return;
     }
     let cancelled = false;
@@ -264,7 +277,7 @@ export function ClipWaveformEditor({
       if (cancelled) {
         return;
       }
-      setPreviewUrl((prev) => {
+      setPreviewUrlFetched((prev) => {
         if (prev) {
           URL.revokeObjectURL(prev);
         }
@@ -274,16 +287,20 @@ export function ClipWaveformEditor({
     return () => {
       cancelled = true;
     };
-  }, [open, jobId, clip.clipId]);
+  }, [open, jobId, clip.clipId, previewUrlProp]);
 
   useEffect(() => {
     if (!open) {
-      setThumbUrl((prev) => {
+      setThumbUrlFetched((prev) => {
         if (prev) {
           URL.revokeObjectURL(prev);
         }
         return null;
       });
+      return;
+    }
+    if (thumbUrlProp) {
+      // Use the prop value, don't fetch
       return;
     }
     let cancelled = false;
@@ -298,7 +315,7 @@ export function ClipWaveformEditor({
       if (cancelled) {
         return;
       }
-      setThumbUrl((prev) => {
+      setThumbUrlFetched((prev) => {
         if (prev) {
           URL.revokeObjectURL(prev);
         }
@@ -308,7 +325,7 @@ export function ClipWaveformEditor({
     return () => {
       cancelled = true;
     };
-  }, [open, jobId, clip.clipId]);
+  }, [open, jobId, clip.clipId, thumbUrlProp]);
 
   useEffect(() => {
     if (!open || sourceDurationSec <= 0) {
@@ -739,13 +756,13 @@ export function ClipWaveformEditor({
         videoRef.current.removeAttribute("src");
         void videoRef.current.load();
       }
-      setThumbUrl((prev) => {
+      setThumbUrlFetched((prev) => {
         if (prev) {
           URL.revokeObjectURL(prev);
         }
         return null;
       });
-      setPreviewUrl((prev) => {
+      setPreviewUrlFetched((prev) => {
         if (prev) {
           URL.revokeObjectURL(prev);
         }

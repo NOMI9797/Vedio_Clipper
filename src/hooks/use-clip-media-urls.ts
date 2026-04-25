@@ -1,13 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { apiFetch } from "@/lib/api/client";
 import type { ClipEntry } from "@/lib/clips/clip-entry";
-
-type ClipsResponse =
-  | { sourceDurationSec?: number; clips?: ClipEntry[] }
-  | ClipEntry[];
 
 const THUMB_BATCH = 4;
 const PREVIEW_BATCH = 2;
@@ -18,25 +14,22 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Loads clip list, thumbnails (batched), and preview MP4 blob URLs (staggered).
- * Revokes object URLs on job change and unmount.
+ * Loads thumbnail and preview MP4 blob URLs progressively for clips.
+ * Works with React Query cached clip data.
  */
-export function useJobReadyClips(jobId: string | null) {
-  const [clips, setClips] = useState<ClipEntry[]>([]);
-  const [sourceDurationSec, setSourceDurationSec] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+export function useClipMediaUrls(jobId: string | null, clips: ClipEntry[]) {
   const [thumbUrls, setThumbUrls] = useState<Record<string, string>>({});
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
+
   const clipsRef = useRef<ClipEntry[]>([]);
   clipsRef.current = clips;
-  const refetchInFlightRef = useRef(false);
-  const lastRefetchMsRef = useRef(0);
   const thumbRef = useRef<Record<string, string>>({});
   const previewRef = useRef<Record<string, string>>({});
   thumbRef.current = thumbUrls;
   previewRef.current = previewUrls;
 
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       for (const u of Object.values(thumbRef.current)) {
@@ -48,92 +41,33 @@ export function useJobReadyClips(jobId: string | null) {
     };
   }, []);
 
-  const refetch = useCallback(async () => {
-    if (!jobId) {
-      return;
-    }
-    const now = Date.now();
-    if (refetchInFlightRef.current) {
-      return;
-    }
-    if (now - lastRefetchMsRef.current < 4000) {
-      return;
-    }
-    refetchInFlightRef.current = true;
-    lastRefetchMsRef.current = now;
-    try {
-      const res = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/clips`);
-      const raw = await res.text();
-      if (!res.ok) {
-        return;
-      }
-      const j = JSON.parse(raw) as ClipsResponse;
-      if (Array.isArray(j)) {
-        setClips(j);
-      } else {
-        setSourceDurationSec(j.sourceDurationSec ?? 0);
-        setClips(j.clips ?? []);
-      }
-    } finally {
-      refetchInFlightRef.current = false;
-    }
-  }, [jobId]);
-
+  // Cleanup on job change
   useEffect(() => {
     if (!jobId) {
-      setClips([]);
-      setSourceDurationSec(0);
-      setError(null);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    void (async () => {
-      const res = await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/clips`);
-      const raw = await res.text();
-      if (cancelled) {
-        return;
-      }
-      if (!res.ok) {
-        let msg = raw;
-        try {
-          const j = JSON.parse(raw) as { error?: string };
-          if (j.error) {
-            msg = j.error;
-          }
-        } catch {
-          // keep
+      setThumbUrls((prev) => {
+        for (const u of Object.values(prev)) {
+          URL.revokeObjectURL(u);
         }
-        setError(msg);
-        setClips([]);
-        setLoading(false);
-        return;
-      }
-      const body = JSON.parse(raw) as
-        | ClipEntry[]
-        | { sourceDurationSec?: number; clips?: ClipEntry[] };
-      if (Array.isArray(body)) {
-        setSourceDurationSec(0);
-        setClips(body);
-      } else {
-        setSourceDurationSec(body.sourceDurationSec ?? 0);
-        setClips(body.clips ?? []);
-      }
-      setLoading(false);
-    })();
-    return () => {
-      cancelled = true;
-    };
+        return {};
+      });
+      setPreviewUrls((prev) => {
+        for (const u of Object.values(prev)) {
+          URL.revokeObjectURL(u);
+        }
+        return {};
+      });
+    }
   }, [jobId]);
 
-  // Fetch thumbnails in small batches with delays between batches
+  // Fetch thumbnails in small batches
   useEffect(() => {
     if (!jobId || clips.length === 0) {
       return;
     }
     let cancelled = false;
+    setLoading(true);
     const created: string[] = [];
+
     const run = async () => {
       const entries: Array<[string, string]> = [];
       for (let i = 0; i < clips.length; i += THUMB_BATCH) {
@@ -167,7 +101,11 @@ export function useJobReadyClips(jobId: string | null) {
           await sleep(BATCH_DELAY_MS);
         }
       }
+      if (!cancelled) {
+        setLoading(false);
+      }
     };
+
     void run();
     return () => {
       cancelled = true;
@@ -185,7 +123,7 @@ export function useJobReadyClips(jobId: string | null) {
     [clips]
   );
 
-  // Fetch previews in small batches (2 at a time) with delays
+  // Fetch previews in small batches
   useEffect(() => {
     if (!jobId) {
       return;
@@ -201,6 +139,7 @@ export function useJobReadyClips(jobId: string | null) {
     }
     let cancelled = false;
     const created: string[] = [];
+
     const run = async () => {
       const list = clipsRef.current;
       if (list.length === 0) {
@@ -234,9 +173,7 @@ export function useJobReadyClips(jobId: string | null) {
                 return;
               }
               const url = URL.createObjectURL(
-                t
-                  ? blob
-                  : new Blob([blob], { type: "video/mp4" })
+                t ? blob : new Blob([blob], { type: "video/mp4" })
               );
               created.push(url);
               entries.push([clip.clipId, url]);
@@ -253,6 +190,7 @@ export function useJobReadyClips(jobId: string | null) {
         }
       }
     };
+
     void run();
     return () => {
       cancelled = true;
@@ -262,31 +200,9 @@ export function useJobReadyClips(jobId: string | null) {
     };
   }, [jobId, clipPreviewFetchKey]);
 
-  useEffect(() => {
-    if (!jobId) {
-      setThumbUrls((prev) => {
-        for (const u of Object.values(prev)) {
-          URL.revokeObjectURL(u);
-        }
-        return {};
-      });
-      setPreviewUrls((prev) => {
-        for (const u of Object.values(prev)) {
-          URL.revokeObjectURL(u);
-        }
-        return {};
-      });
-    }
-  }, [jobId]);
-
   return {
-    clips,
-    setClips,
-    sourceDurationSec,
-    loading,
-    error,
-    refetch,
     thumbUrls,
     previewUrls,
+    loading,
   };
 }

@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { ClipWaveformEditor } from "@/components/clips/clip-waveform-editor";
-import { useJobReadyClips } from "@/hooks/use-job-ready-clips";
+import { useClipMediaUrls } from "@/hooks/use-clip-media-urls";
+import { useJobClips } from "@/hooks/use-job-clips";
+import type { ClipEntry } from "@/lib/clips/clip-entry";
 
 type Clip = {
   clipId: string;
@@ -26,23 +28,42 @@ type Props = {
 
 export function EditClipView({ projectId, clipId, jobId }: Props) {
   const router = useRouter();
-  const { clips, setClips, sourceDurationSec, loading, error, refetch } = useJobReadyClips(jobId);
+
+  // Use React Query cached data for instant load
+  const {
+    clips,
+    sourceDurationSec,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useJobClips(jobId);
+
+  // Local state for optimistic updates
+  const [localClips, setLocalClips] = useState<ClipEntry[]>(clips);
+
+  // Sync with fetched clips
+  useEffect(() => {
+    setLocalClips(clips);
+  }, [clips]);
+
+  // Media URLs for the editor
+  const { thumbUrls, previewUrls } = useClipMediaUrls(jobId, localClips);
 
   const clip = useMemo(
-    () => clips.find((c) => c.clipId === clipId) as Clip | undefined,
-    [clips, clipId]
+    () => localClips.find((c) => c.clipId === clipId) as Clip | undefined,
+    [localClips, clipId]
   );
 
   const backHref = `/projects/${projectId}/clips${jobId ? `?jobId=${encodeURIComponent(jobId)}` : ""}`;
 
+  // Refetch if clip not found (might be new)
   useEffect(() => {
-    if (!jobId) {
-      return;
-    }
-    if (clip) {
-      return;
-    }
-    void refetch();
+    if (!jobId) return;
+    if (clip) return;
+    // Only refetch once if clip is missing
+    const t = setTimeout(() => void refetch(), 500);
+    return () => clearTimeout(t);
   }, [jobId, clip, refetch]);
 
   if (!jobId) {
@@ -54,11 +75,18 @@ export function EditClipView({ projectId, clipId, jobId }: Props) {
     );
   }
 
-  if (loading && !clip) {
-    return <div className="p-6 text-sm text-zinc-400">Loading clip editor…</div>;
+  if (isLoading && !clip) {
+    return (
+      <div className="flex min-h-dvh items-center justify-center">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-emerald-400" />
+          <p className="text-sm text-zinc-500">Loading clip...</p>
+        </div>
+      </div>
+    );
   }
 
-  if (error && !clip) {
+  if (isError && !clip) {
     return (
       <div className="mx-auto max-w-xl space-y-3 p-6 text-zinc-300">
         <p className="text-sm text-rose-400">{error}</p>
@@ -92,10 +120,15 @@ export function EditClipView({ projectId, clipId, jobId }: Props) {
         jobId={jobId}
         clip={clip}
         sourceDurationSec={sourceDurationSec}
+        thumbUrl={thumbUrls[clipId] ?? null}
+        previewUrl={previewUrls[clipId] ?? null}
         onPatched={(next) => {
-          setClips((prev) => prev.map((x) => (x.clipId === next.clipId ? { ...x, ...next } : x)));
+          // Optimistic update
+          setLocalClips((prev) =>
+            prev.map((x) => (x.clipId === next.clipId ? { ...x, ...next } : x))
+          );
         }}
-        onClipsRefresh={refetch}
+        onClipsRefresh={() => void refetch()}
         fmtTs={(s) => {
           const total = Math.max(0, Math.floor(s));
           const m = Math.floor(total / 60).toString().padStart(2, "0");
