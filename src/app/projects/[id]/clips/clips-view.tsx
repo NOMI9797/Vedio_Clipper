@@ -1,11 +1,11 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { apiFetch } from "@/lib/api/client";
 import { ReadyClipCard } from "@/components/clips/ready-clip-card";
-import { ClipWaveformEditor } from "@/components/clips/clip-waveform-editor";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useJobReadyClips } from "@/hooks/use-job-ready-clips";
@@ -33,8 +33,8 @@ export function ClipsView({ projectId, jobId }: Props) {
     thumbUrls,
     previewUrls,
   } = useJobReadyClips(jobId);
+  const router = useRouter();
 
-  const [editingClip, setEditingClip] = useState<ClipEntry | null>(null);
   const [activeClipId, setActiveClipId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [manualAddOpen, setManualAddOpen] = useState(false);
@@ -159,22 +159,6 @@ export function ClipsView({ projectId, jobId }: Props) {
     const t = window.setTimeout(() => setToast(null), 3000);
     return () => window.clearTimeout(t);
   }, [toast]);
-
-  useEffect(() => {
-    if (!editingClip) {
-      return;
-    }
-    const n = clips.find((c) => c.clipId === editingClip.clipId);
-    if (
-      n &&
-      (n.previewReady !== editingClip.previewReady ||
-        n.start !== editingClip.start ||
-        n.end !== editingClip.end ||
-        n.edited !== editingClip.edited)
-    ) {
-      setEditingClip(n);
-    }
-  }, [clips, editingClip]);
 
   const selectedClip =
     clips.find((c) => c.clipId === selectedClipId) ??
@@ -684,7 +668,9 @@ export function ClipsView({ projectId, jobId }: Props) {
                   onSetActive={setActiveClipId}
                   onEdit={() => {
                     setActiveClipId(null);
-                    setEditingClip(c);
+                    router.push(
+                      `/projects/${encodeURIComponent(projectId)}/clips/${encodeURIComponent(c.clipId)}/edit?jobId=${encodeURIComponent(jobId ?? "")}`
+                    );
                   }}
                   onDownload={() => downloadClip(c.clipId, c.suggested_title)}
                   onToggleSelect={(sel) => void setClipSelection(c.clipId, sel)}
@@ -735,30 +721,6 @@ export function ClipsView({ projectId, jobId }: Props) {
         )}
       </div>
 
-      {editingClip && jobId ? (
-        <ClipWaveformEditor
-          key={editingClip.clipId}
-          open
-          onOpenChange={(o) => {
-            if (!o) {
-              setEditingClip(null);
-            }
-          }}
-          jobId={jobId}
-          clip={editingClip}
-          sourceDurationSec={sourceDurationSec}
-          onPatched={(next) => {
-            setClips((prev) =>
-              prev.map((x) => (x.clipId === next.clipId ? { ...x, ...next } : x))
-            );
-            setEditingClip((cur) =>
-              cur && cur.clipId === next.clipId ? { ...cur, ...next } : cur
-            );
-          }}
-          onClipsRefresh={refetch}
-          fmtTs={fmtTs}
-        />
-      ) : null}
     </div>
   );
 }

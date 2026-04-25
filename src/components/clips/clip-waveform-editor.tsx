@@ -35,6 +35,7 @@ type Clip = {
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  standalone?: boolean;
   jobId: string;
   clip: Clip;
   sourceDurationSec: number;
@@ -129,6 +130,7 @@ function mergePatchClip(raw: unknown): Clip {
 export function ClipWaveformEditor({
   open,
   onOpenChange,
+  standalone = false,
   jobId,
   clip,
   sourceDurationSec,
@@ -158,6 +160,7 @@ export function ClipWaveformEditor({
   const trackRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const playheadRef = useRef(0);
@@ -235,7 +238,7 @@ export function ClipWaveformEditor({
   }, [open, clip.clipId, clip.previewReady, onClipsRefresh]);
 
   useEffect(() => {
-    if (!open || !clip.previewReady) {
+    if (!open) {
       setPreviewUrl((prev) => {
         if (prev) {
           URL.revokeObjectURL(prev);
@@ -271,7 +274,41 @@ export function ClipWaveformEditor({
     return () => {
       cancelled = true;
     };
-  }, [open, jobId, clip.clipId, clip.previewReady]);
+  }, [open, jobId, clip.clipId]);
+
+  useEffect(() => {
+    if (!open) {
+      setThumbUrl((prev) => {
+        if (prev) {
+          URL.revokeObjectURL(prev);
+        }
+        return null;
+      });
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const res = await apiFetch(
+        `/api/jobs/${encodeURIComponent(jobId)}/clips/${encodeURIComponent(clip.clipId)}/thumbnail`
+      );
+      if (cancelled || !res.ok) {
+        return;
+      }
+      const blob = await res.blob();
+      if (cancelled) {
+        return;
+      }
+      setThumbUrl((prev) => {
+        if (prev) {
+          URL.revokeObjectURL(prev);
+        }
+        return URL.createObjectURL(blob);
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, jobId, clip.clipId]);
 
   useEffect(() => {
     if (!open || sourceDurationSec <= 0) {
@@ -536,6 +573,14 @@ export function ClipWaveformEditor({
     return w.filter((x) => x.end > inT - 0.02 && x.start < outT + 0.02);
   }, [transcript, inT, outT]);
 
+  const segmentsInRange = useMemo(() => {
+    const segs = transcript?.segments;
+    if (!segs?.length) {
+      return [];
+    }
+    return segs.filter((s) => s.end > inT - 0.05 && s.start < outT + 0.05);
+  }, [transcript, inT, outT]);
+
   const loadPlayBuffer = useCallback(async () => {
     if (sourceDurationSec <= 0) {
       return;
@@ -694,6 +739,12 @@ export function ClipWaveformEditor({
         videoRef.current.removeAttribute("src");
         void videoRef.current.load();
       }
+      setThumbUrl((prev) => {
+        if (prev) {
+          URL.revokeObjectURL(prev);
+        }
+        return null;
+      });
       setPreviewUrl((prev) => {
         if (prev) {
           URL.revokeObjectURL(prev);
@@ -709,15 +760,45 @@ export function ClipWaveformEditor({
   const isDirty =
     Math.abs(inT - clip.start) > 0.01 || Math.abs(outT - clip.end) > 0.01;
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[min(90vh,900px)] max-w-3xl overflow-y-auto sm:max-w-3xl">
-        <DialogHeader>
-          <DialogTitle className="text-base">Edit clip</DialogTitle>
-          <p className="line-clamp-1 text-sm font-medium text-zinc-300">
-            {clip.suggested_title}
-          </p>
-        </DialogHeader>
+  const editorHeader = standalone ? (
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="space-y-1">
+        <h2 className="text-xl font-semibold text-zinc-100">Edit clip</h2>
+        <p className="line-clamp-1 text-sm font-medium text-zinc-300">
+          {clip.suggested_title}
+        </p>
+      </div>
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={() => onOpenChange(false)}
+          className="h-9"
+        >
+          Back
+        </Button>
+        <Button
+          type="button"
+          onClick={() => void doPatch()}
+          disabled={saving || !durValid || !isDirty}
+          className="h-9"
+        >
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save changes"}
+        </Button>
+      </div>
+    </div>
+  ) : (
+    <DialogHeader>
+      <DialogTitle className="text-base">Edit clip</DialogTitle>
+      <p className="line-clamp-1 text-sm font-medium text-zinc-300">
+        {clip.suggested_title}
+      </p>
+    </DialogHeader>
+  );
+
+  const editorContent = (
+    <>
+      {editorHeader}
         {peaksLoading && !previewUrl && (
           <p className="flex items-center gap-2 text-sm text-zinc-400">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading waveform…
@@ -737,132 +818,197 @@ export function ClipWaveformEditor({
             Full preview is encoding — use waveform, transcript, and in/out until it is ready.
           </p>
         )}
-        <div className="space-y-3">
-          {clip.previewReady ? (
-            <div className="overflow-hidden rounded-md border border-white/10 bg-black">
-              <video
-                ref={videoRef}
-                className="aspect-video w-full object-contain"
-                playsInline
-                controls={false}
-                src={previewUrl ?? undefined}
-              />
-            </div>
-          ) : (
-            <div className="flex aspect-video w-full items-center justify-center rounded-md border border-dashed border-zinc-700 bg-zinc-950/60 text-center text-xs text-zinc-500">
-              No preview video yet (thumbnail + waveform only)
-            </div>
-          )}
-          <p className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-            Audio
-          </p>
-          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-zinc-400">
-            <span>
-              In {fmtTs(inT)} · Out {fmtTs(outT)} · {fmtTs(outT - inT)} (min {MIN_S}s, max
-              {MAX_S}s) {waveMeta ? `· ${waveMeta}` : ""}
-            </span>
-            {isDirty && (
-              <span className="text-amber-400/90">Unsaved</span>
-            )}
-            {!durValid && <span className="text-rose-400">Duration out of range</span>}
-            <div className="flex items-center gap-1">
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                className="h-7 w-7"
-                onClick={togglePlay}
-                disabled={peaksLoading && !previewUrl}
-                aria-label={isPlaying ? "Pause" : "Play"}
-              >
-                {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-              </Button>
-            </div>
-          </div>
+        <div className={cn("space-y-4", standalone && "min-h-[calc(100dvh-7rem)]")}>
           <div
-            ref={trackRef}
-            className="relative h-32 w-full cursor-crosshair select-none overflow-x-visible overflow-y-hidden rounded-md border border-white/10 bg-zinc-900/80"
-            onClick={onTrackClick}
-            role="presentation"
+            className={cn(
+              "grid gap-4 lg:grid-cols-[300px_1fr]",
+              standalone && "xl:grid-cols-[380px_minmax(0,1fr)_56px]"
+            )}
           >
-            <div className="absolute inset-0 flex items-end justify-between gap-px px-0.5 pb-0 pt-1">
-              {displayPeaks.length === 0 && !peaksLoading ? (
-                <div className="flex w-full items-center justify-center text-[11px] text-zinc-500">
-                  No preview
-                </div>
-              ) : (
-                displayPeaks.map((h, i) => (
-                  <div
-                    key={i}
-                    className="min-w-px flex-1 rounded-t bg-cyan-500/40"
-                    style={{ height: `${Math.max(4, h * 100)}%` }}
-                  />
-                ))
+            <div
+              className={cn(
+                "rounded-md border border-white/10 bg-zinc-950/70 p-3",
+                standalone && "xl:h-[calc(100dvh-14rem)]"
               )}
-            </div>
-            <div
-              className="pointer-events-none absolute top-0 bottom-0 border-x border-amber-400/50 bg-amber-400/10"
-              style={{
-                left: `${Math.max(0, inPos)}%`,
-                width: `${Math.max(0, outPos - inPos)}%`,
-              }}
-            />
-            <div
-              className="pointer-events-none absolute top-0 bottom-0 w-px bg-white/30"
-              style={{ left: `${phPos}%` }}
-            />
-            <div
-              data-handle="in"
-              className="absolute top-0 h-full w-3 -translate-x-1/2 cursor-ew-resize touch-none"
-              style={{ left: `${inPos}%` }}
-              onPointerDown={onInDown}
             >
-              <div className="mx-auto h-full w-1 rounded-sm bg-amber-400" />
-            </div>
-            <div
-              data-handle="out"
-              className="absolute top-0 h-full w-3 -translate-x-1/2 cursor-ew-resize touch-none"
-              style={{ left: `${outPos}%` }}
-              onPointerDown={onOutDown}
-            >
-              <div className="mx-auto h-full w-1 rounded-sm bg-amber-400" />
-            </div>
-          </div>
-          <p className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-            Transcript (word-level)
-          </p>
-          <p className="text-[10px] text-zinc-500">
-            Drag in/out — save when ready. The playhead on the track follows the preview video or
-            audio. Dragging the in handle seeks the video to the new start.
-          </p>
-          <audio ref={audioRef} className="hidden" />
-          <div className="max-h-[220px] overflow-auto rounded-md border border-white/5 bg-zinc-950/60 p-2">
-            {wordsInRange.length === 0 ? (
-              <p className="text-xs text-zinc-500">
-                {transcript
-                  ? "No words in this in/out range."
-                  : "Transcript not loaded."}
+              <p className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+                Transcript
               </p>
-            ) : (
-              <p className="text-xs leading-relaxed text-zinc-400">
-                {wordsInRange.map((w, i) => {
-                  const active = playhead >= w.start && playhead < w.end;
-                  return (
-                    <span
-                      key={`w-${i}-${w.start.toFixed(3)}`}
-                      className={cn(
-                        "mr-1 inline",
-                        active && "rounded bg-cyan-500/25 text-cyan-100"
-                      )}
-                    >
-                      {w.word}
-                    </span>
-                  );
-                })}
+              <p className="mt-1 text-[10px] text-zinc-500">
+                Word-level sync for this clip window.
               </p>
+              <div
+                className={cn(
+                  "mt-2 max-h-[460px] overflow-auto rounded-md border border-white/5 bg-black/20 p-2",
+                  standalone && "max-h-[calc(100dvh-20rem)]"
+                )}
+              >
+                {segmentsInRange.length === 0 ? (
+                  <p className="text-xs text-zinc-500">
+                    {transcript
+                      ? "No transcript lines in this in/out range."
+                      : "Transcript not loaded."}
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {segmentsInRange.map((s, i) => {
+                      const active = playhead >= s.start && playhead < s.end;
+                      return (
+                        <p
+                          key={`${s.start}-${s.end}-${i}`}
+                          className={cn(
+                            "rounded px-1.5 py-1 text-xs leading-relaxed text-zinc-300",
+                            active && "bg-emerald-500/20 text-emerald-100"
+                          )}
+                        >
+                          <span className="mr-2 font-mono text-[10px] text-zinc-500">
+                            {fmtTs(s.start)}
+                          </span>
+                          {s.text}
+                        </p>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {previewUrl ? (
+                <div
+                  className={cn(
+                    "overflow-hidden rounded-md border border-white/10 bg-black",
+                    standalone && "flex min-h-[420px] items-center justify-center"
+                  )}
+                >
+                  <video
+                    ref={videoRef}
+                    className={cn(
+                      "aspect-video w-full object-contain",
+                      standalone && "mx-auto aspect-[9/16] max-h-[420px] max-w-[260px]"
+                    )}
+                    playsInline
+                    controls={false}
+                    src={previewUrl ?? undefined}
+                  />
+                </div>
+              ) : thumbUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={thumbUrl}
+                  alt="Clip thumbnail"
+                  className={cn(
+                    "aspect-video w-full rounded-md border border-white/10 object-cover",
+                    standalone && "mx-auto aspect-[9/16] max-h-[420px] max-w-[260px]"
+                  )}
+                />
+              ) : (
+                <div className="flex aspect-video w-full items-center justify-center rounded-md border border-dashed border-zinc-700 bg-zinc-950/60 text-center text-xs text-zinc-500">
+                  No preview video yet (thumbnail + waveform only)
+                </div>
+              )}
+
+              <p className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+                Audio / Timeline
+              </p>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-zinc-400">
+                <span>
+                  In {fmtTs(inT)} · Out {fmtTs(outT)} · {fmtTs(outT - inT)} (min {MIN_S}s, max
+                  {MAX_S}s) {waveMeta ? `· ${waveMeta}` : ""}
+                </span>
+                {isDirty && (
+                  <span className="text-amber-400/90">Unsaved</span>
+                )}
+                {!durValid && <span className="text-rose-400">Duration out of range</span>}
+                <div className="flex items-center gap-1">
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className={cn("h-7 w-7", standalone && "h-8 w-8")}
+                    onClick={togglePlay}
+                    disabled={peaksLoading && !previewUrl}
+                    aria-label={isPlaying ? "Pause" : "Play"}
+                  >
+                    {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+                  </Button>
+                </div>
+              </div>
+              <div
+                ref={trackRef}
+                className={cn(
+                  "relative h-32 w-full cursor-crosshair select-none overflow-x-visible overflow-y-hidden rounded-md border border-white/10 bg-zinc-900/80",
+                  standalone && "h-36"
+                )}
+                onClick={onTrackClick}
+                role="presentation"
+              >
+                <div className="absolute inset-0 flex items-end justify-between gap-px px-0.5 pb-0 pt-1">
+                  {displayPeaks.length === 0 && !peaksLoading ? (
+                    <div className="flex w-full items-center justify-center text-[11px] text-zinc-500">
+                      No preview
+                    </div>
+                  ) : (
+                    displayPeaks.map((h, i) => (
+                      <div
+                        key={i}
+                        className="min-w-px flex-1 rounded-t bg-cyan-500/40"
+                        style={{ height: `${Math.max(4, h * 100)}%` }}
+                      />
+                    ))
+                  )}
+                </div>
+                <div
+                  className="pointer-events-none absolute top-0 bottom-0 border-x border-amber-400/50 bg-amber-400/10"
+                  style={{
+                    left: `${Math.max(0, inPos)}%`,
+                    width: `${Math.max(0, outPos - inPos)}%`,
+                  }}
+                />
+                <div
+                  className="pointer-events-none absolute top-0 bottom-0 w-px bg-white/30"
+                  style={{ left: `${phPos}%` }}
+                />
+                <div
+                  data-handle="in"
+                  className="absolute top-0 h-full w-3 -translate-x-1/2 cursor-ew-resize touch-none"
+                  style={{ left: `${inPos}%` }}
+                  onPointerDown={onInDown}
+                >
+                  <div className="mx-auto h-full w-1 rounded-sm bg-amber-400" />
+                </div>
+                <div
+                  data-handle="out"
+                  className="absolute top-0 h-full w-3 -translate-x-1/2 cursor-ew-resize touch-none"
+                  style={{ left: `${outPos}%` }}
+                  onPointerDown={onOutDown}
+                >
+                  <div className="mx-auto h-full w-1 rounded-sm bg-amber-400" />
+                </div>
+              </div>
+              <p className="text-[10px] text-zinc-500">
+                Drag in/out — save when ready. Playhead syncs video + transcript + audio.
+              </p>
+            </div>
+            {standalone && (
+              <div className="hidden xl:flex xl:flex-col xl:items-center xl:gap-2">
+                <Button type="button" variant="ghost" size="sm" className="w-full text-xs text-zinc-400">
+                  Captions
+                </Button>
+                <Button type="button" variant="ghost" size="sm" className="w-full text-xs text-zinc-400">
+                  Media
+                </Button>
+                <Button type="button" variant="ghost" size="sm" className="w-full text-xs text-zinc-400">
+                  B-roll
+                </Button>
+                <Button type="button" variant="ghost" size="sm" className="w-full text-xs text-zinc-400">
+                  Text
+                </Button>
+              </div>
             )}
           </div>
-          <div className="flex justify-end gap-2">
+          <audio ref={audioRef} className="hidden" />
+          <div className={cn("flex justify-end gap-2", standalone && "hidden")}>
             <Button
               type="button"
               variant="secondary"
@@ -879,6 +1025,21 @@ export function ClipWaveformEditor({
             </Button>
           </div>
         </div>
+    </>
+  );
+
+  if (standalone) {
+    return (
+      <div className="w-full px-4 py-4 sm:px-6 sm:py-6">
+        {editorContent}
+      </div>
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[min(90vh,900px)] max-w-3xl overflow-y-auto sm:max-w-3xl">
+        {editorContent}
       </DialogContent>
     </Dialog>
   );

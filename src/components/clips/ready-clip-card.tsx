@@ -251,7 +251,7 @@ export function ReadyClipCard({
           </div>
         )}
         {activeCaption && (
-          <div className="pointer-events-none absolute inset-x-1 bottom-6 z-10 px-1 py-1 text-center text-[11px] font-extrabold leading-tight text-white sm:text-[12px]">
+          <div className="pointer-events-none absolute inset-x-1 bottom-6 z-10 px-1 py-1 text-center text-[11px] font-extrabold uppercase leading-tight text-emerald-400 sm:text-[12px]">
             {activeCaption}
           </div>
         )}
